@@ -1,0 +1,11 @@
+/Users/m1/PQC/blackchain-crypto-lib-rust/target/debug/deps/pqcrypto_hqc-86a4c372b06ec42d.d: /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/lib.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/ffi.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs128.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs192.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs256.rs
+
+/Users/m1/PQC/blackchain-crypto-lib-rust/target/debug/deps/libpqcrypto_hqc-86a4c372b06ec42d.rlib: /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/lib.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/ffi.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs128.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs192.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs256.rs
+
+/Users/m1/PQC/blackchain-crypto-lib-rust/target/debug/deps/libpqcrypto_hqc-86a4c372b06ec42d.rmeta: /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/lib.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/ffi.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs128.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs192.rs /Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs256.rs
+
+/Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/lib.rs:
+/Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/ffi.rs:
+/Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs128.rs:
+/Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs192.rs:
+/Users/m1/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pqcrypto-hqc-0.1.6/src/hqcrmrs256.rs:

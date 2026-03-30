@@ -1,0 +1,8 @@
+[package]
+name = "blackchain-crypto-lib-rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pqcrypto = "0.16"
+pqcrypto-dilithium = "0.5"
