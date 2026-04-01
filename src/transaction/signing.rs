@@ -40,10 +40,10 @@ impl BlackChainTxType {
         let dil_sk = DilithiumPrivateKey::try_from(key.dilithium.clone())?;
         
         let mut composite_sig = Vec::new();
-        composite_sig.extend(dil_sk.sign(hash.as_slice())?);
-        composite_sig.extend(p521_sk.sign(hash.as_slice())?);
-        composite_sig.extend(ed448_sk.sign(hash.as_slice())?);
-        composite_sig.extend(e521_sk.sign(hash.as_slice())?);
+        composite_sig.extend(dil_sk.sign(hash.as_slice(), None)?);
+        composite_sig.extend(p521_sk.sign(hash.as_slice(), None)?);
+        composite_sig.extend(ed448_sk.sign(hash.as_slice(), None)?);
+        composite_sig.extend(e521_sk.sign(hash.as_slice(), None)?);
         
         self.pqc_signature = Some(alloy_primitives::Bytes::from(composite_sig));
         self.v = Some(alloy_primitives::U256::from(self.chain_id * 2 + 35));

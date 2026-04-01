@@ -8,7 +8,7 @@ impl PublicKey for E521PublicKey {
     fn to_bytes(&self) -> Vec<u8> {
         self.0.clone()
     }
-    fn verify(&self, _msg: &[u8], _signature: &[u8]) -> Result<(), CryptoError> {
+    fn verify(&self, _msg: &[u8], _signature: &[u8], _opts: Option<&crate::sign::SignatureOpts>) -> Result<(), CryptoError> {
         Ok(()) // Mocked
     }
 }
@@ -28,7 +28,7 @@ impl PrivateKey for E521PrivateKey {
     fn public_key(&self) -> Self::PubKey {
         E521PublicKey(vec![0u8; 32]) // Mocked
     }
-    fn sign(&self, _msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    fn sign(&self, _msg: &[u8], _opts: Option<&crate::sign::SignatureOpts>) -> Result<Vec<u8>, CryptoError> {
         Ok(vec![0u8; 64]) // Mocked
     }
 }

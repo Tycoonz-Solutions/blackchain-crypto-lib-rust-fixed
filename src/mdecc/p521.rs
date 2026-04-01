@@ -10,7 +10,7 @@ impl PublicKey for P521PublicKey {
         self.0.to_encoded_point(false).as_bytes().to_vec()
     }
 
-    fn verify(&self, msg: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
+    fn verify(&self, msg: &[u8], signature: &[u8], _opts: Option<&crate::sign::SignatureOpts>) -> Result<(), CryptoError> {
         let sig = p521::ecdsa::Signature::from_slice(signature)
             .map_err(|e| CryptoError::SignatureError(e.to_string()))?;
         self.0.verify(msg, &sig)
@@ -38,7 +38,7 @@ impl PrivateKey for P521PrivateKey {
         P521PublicKey(VerifyingKey::from(&self.0))
     }
 
-    fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    fn sign(&self, msg: &[u8], _opts: Option<&crate::sign::SignatureOpts>) -> Result<Vec<u8>, CryptoError> {
         let sig: p521::ecdsa::Signature = self.0.sign(msg);
         Ok(sig.to_bytes().to_vec())
     }

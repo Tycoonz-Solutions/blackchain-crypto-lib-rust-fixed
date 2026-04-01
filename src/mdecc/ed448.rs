@@ -12,11 +12,11 @@ impl PublicKey for Ed448PublicKey {
         self.0.as_byte().to_vec()
     }
 
-    fn verify(&self, msg: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
+    fn verify(&self, msg: &[u8], signature: &[u8], opts: Option<&crate::sign::SignatureOpts>) -> Result<(), CryptoError> {
         let sig_bytes: [u8; 114] = signature.try_into()
             .map_err(|_| CryptoError::SignatureError("Invalid Ed448 signature length".to_string()))?;
-        // ed448_rust signature verify is `verify(msg, signature, ctx)`
-        self.0.verify(msg, &sig_bytes, None)
+        let ctx = opts.map(|o| o.context.as_bytes());
+        self.0.verify(msg, &sig_bytes, ctx)
             .map_err(|_| CryptoError::SignatureError("Verification failed".to_string()))
     }
 }
@@ -41,8 +41,9 @@ impl PrivateKey for Ed448PrivateKey {
         Ed448PublicKey(Ed448Pub::from(&self.0))
     }
 
-    fn sign(&self, msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        let sig = self.0.sign(msg, None)
+    fn sign(&self, msg: &[u8], opts: Option<&crate::sign::SignatureOpts>) -> Result<Vec<u8>, CryptoError> {
+        let ctx = opts.map(|o| o.context.as_bytes());
+        let sig = self.0.sign(msg, ctx)
             .map_err(|_| CryptoError::SignatureError("Signing failed".to_string()))?;
         Ok(sig.to_vec())
     }

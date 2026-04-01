@@ -11,10 +11,14 @@ ed448-rust = "0.1.1"
 getrandom = "0.4.2"
 p521 = "0.13.3"
 pqcrypto = "0.16"
-pqcrypto-dilithium = "0.5"
-pqcrypto-traits = "0.3.5"
 rand = "0.10.0"
 serde = { version = "1.0.228", features = ["derive"] }
 sha3 = "0.10.8"
 thiserror = "2.0.18"
-zeroize = "1.8.2"
+zeroize = { version = "1.8.2", features = ["zeroize_derive", "derive"] }
+rand_core          = "0.6"
+rand_chacha        = "0.3"
+subtle             = "2"
+hex                = "0.4"
+pqc_dilithium = { version = "0.2.0", features = ["mode5"] }
+crystals-dilithium = "2.0.0"
