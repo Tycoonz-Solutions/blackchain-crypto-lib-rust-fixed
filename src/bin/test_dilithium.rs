@@ -1,25 +1,31 @@
 use blackchain_crypto_lib_rust::dilithium::{generate_key, new_key_from_seed};
 use blackchain_crypto_lib_rust::sign::{PrivateKey, PublicKey};
+use blackchain_crypto_lib_rust::dilithium::DilithiumScheme;
 
 fn main() {
     println!("=== Testing Dilithium5 Production Implementation ===\n");
+    let DilScheme = DilithiumScheme{};
     
     // 1. Generate normal keys
     println!("1. Generating Dilithium5 keys...");
     let (pk, sk) = generate_key().expect("Failed to generate keys");
 
     println!("   Public Key length: {} bytes", pk.to_bytes().len());
-    println!("   Public Key: {:?}", pk);
+    // println!("   Public Key: {:?}", pk);
     
     println!("   Private Key length: {} bytes", sk.to_bytes().len());
-    println!("   Private Key: {:?}", sk);
+    // println!("   Private Key: {:?}", sk);
+
+    println!("   Scheme Name: {}", DilScheme.name());
+    println!("   Unmarshalized Public Key: {:?}", DilScheme.unmarshal_binary_public_key(&pk.to_bytes()));
+    // println!("   Marshalized Private Key: {:?}", sk.to_bytes());
     // 2. Sign a message
     let message = b"Hello from Blackchain PQC via Dilithium5!";
     println!("\n2. Signing message: {:?}", String::from_utf8_lossy(message));
     let signature = sk.sign(message, None).expect("Signature failed");
 
     println!("   Signature length: {} bytes", signature.len());
-    println!("   Signature: {:?}", signature);
+    // println!("   Signature: {:?}", signature);
     
     // 3. Verify signature
     println!("\n3. Verifying signature...");
