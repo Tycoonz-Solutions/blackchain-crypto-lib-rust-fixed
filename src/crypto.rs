@@ -1,8 +1,8 @@
 use crate::error::CryptoError;
-use crate::sign::{PrivateKey, PublicKey, Scheme};
-use crate::dilithium::DilithiumScheme;
+use crate::sign::{TypedScheme, PublicKey as SignPub, PrivateKey as SignPriv};
+use crate::dilithium::{new_key_from_seed as dil_key_from_seed, SEED_SIZE as DIL_SEED};
 use crate::mdecc::p521::P521Scheme;
-use crate::mdecc::ed448::Ed448Scheme;
+use crate::mdecc::ed448::{new_key_from_seed as ed448_key_from_seed, SEED_SIZE as ED448_SEED};
 use crate::mdecc::e521::E521Scheme;
 use alloy_primitives::Address;
 use sha3::{Keccak256, Digest};
@@ -38,27 +38,36 @@ impl BlackChainPublicKey {
 
 impl BlackChainPrivateKey {
     pub fn generate(seed: &[u8]) -> Result<(Self, BlackChainPublicKey), CryptoError> {
-        if seed.len() < 64 {
-            return Err(CryptoError::SeedError("Seed must be at least 64 bytes".into()));
+        if seed.len() < 66 {
+            return Err(CryptoError::SeedError("Seed must be at least 66 bytes".into()));
         }
 
-        let (dilithium_sk, dilithium_pk) = DilithiumScheme::generate_key(&seed[..32])?;
-        let (p521_sk, p521_pk) = P521Scheme::generate_key(seed)?;
-        let (ed448_sk, ed448_pk) = Ed448Scheme::generate_key(seed)?;
-        let (e521_sk, e521_pk) = E521Scheme::generate_key(seed)?;
+        // Dilithium5 — typed API via TypedScheme, deterministic from first 32 bytes
+        let dil_seed: [u8; DIL_SEED] = seed[..DIL_SEED].try_into().unwrap();
+        let (dil_pk, dil_sk) = dil_key_from_seed(&dil_seed);
+
+        // P-521 — derive from seed via TypedScheme
+        let (p521_pk, p521_sk) = P521Scheme.derive_key_typed(seed);
+
+        // Ed448 — derive from first 57 bytes via TypedScheme
+        let ed448_seed = &seed[..ED448_SEED];
+        let (ed448_pk, ed448_sk) = ed448_key_from_seed(ed448_seed);
+
+        // E-521 — mocked, derive from seed
+        let (e521_pk, e521_sk) = E521Scheme.derive_key_typed(seed);
 
         let priv_key = BlackChainPrivateKey {
-            dilithium: dilithium_sk.to_bytes(),
-            p521: p521_sk.to_bytes(),
-            ed448: ed448_sk.to_bytes(),
-            e521: e521_sk.to_bytes(),
+            dilithium: dil_sk.marshal_binary()?,
+            p521:      p521_sk.marshal_binary()?,
+            ed448:     ed448_sk.marshal_binary()?,
+            e521:      e521_sk.marshal_binary()?,
         };
 
         let pub_key = BlackChainPublicKey {
-            dilithium: dilithium_pk.to_bytes(),
-            p521: p521_pk.to_bytes(),
-            ed448: ed448_pk.to_bytes(),
-            e521: e521_pk.to_bytes(),
+            dilithium: dil_pk.marshal_binary()?,
+            p521:      p521_pk.marshal_binary()?,
+            ed448:     ed448_pk.marshal_binary()?,
+            e521:      e521_pk.marshal_binary()?,
         };
 
         Ok((priv_key, pub_key))

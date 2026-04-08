@@ -3,12 +3,16 @@
 //
 // https://pq-crystals.org/dilithium/data/dilithium-specification-round3-20210208.pdf
 
-use std::fmt;
 use crystals_dilithium::dilithium5 as d5;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use std::fmt;
+use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
-use crate::sign::{PrivateKey as SignPrivateKey, PublicKey as SignPublicKey, Scheme as SignScheme, SignatureOpts};
 use crate::error::CryptoError;
+use crate::sign::{
+    self, PrivateKey as SignPrivateKey, PublicKey as SignPublicKey, Scheme as SignScheme,
+    SignatureOpts, TypedScheme,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -40,15 +44,19 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidSize { expected, actual, context } => write!(
+            Self::InvalidSize {
+                expected,
+                actual,
+                context,
+            } => write!(
                 f,
                 "dilithium5: invalid {context} size: expected {expected}, got {actual}"
             ),
             Self::VerificationFailed => write!(f, "dilithium5: signature verification failed"),
-            Self::Internal(msg)      => write!(f, "dilithium5: internal error: {msg}"),
+            Self::Internal(msg) => write!(f, "dilithium5: internal error: {msg}"),
             Self::ContextNotSupported => write!(f, "dilithium5: context strings are not supported"),
-            Self::TypeMismatch        => write!(f, "dilithium5: key type mismatch"),
-            Self::CannotSignHashed    => write!(f, "dilithium5: cannot sign pre-hashed message"),
+            Self::TypeMismatch => write!(f, "dilithium5: key type mismatch"),
+            Self::CannotSignHashed => write!(f, "dilithium5: cannot sign pre-hashed message"),
         }
     }
 }
@@ -66,6 +74,14 @@ impl From<Error> for CryptoError {
 // ---------------------------------------------------------------------------
 
 pub struct PublicKey(d5::PublicKey);
+
+impl fmt::Debug for PublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("DilithiumPublicKey")
+            .field(&hex::encode(self.0.to_bytes()))
+            .finish()
+    }
+}
 
 impl Clone for PublicKey {
     fn clone(&self) -> Self {
@@ -113,14 +129,6 @@ impl PublicKey {
     }
 }
 
-impl fmt::Debug for PublicKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("PublicKey")
-            .field(&hex::encode(self.0.to_bytes()))
-            .finish()
-    }
-}
-
 impl PartialEq for PublicKey {
     fn eq(&self, other: &Self) -> bool {
         self.0.to_bytes() == other.0.to_bytes()
@@ -143,15 +151,22 @@ impl TryFrom<&[u8]> for PublicKey {
     }
 }
 
+// --- sign::PublicKey impl ---------------------------------------------------
+
 impl SignPublicKey for PublicKey {
-    fn to_bytes(&self) -> Vec<u8> {
-        self.0.to_bytes().to_vec()
+    fn scheme(&self) -> &dyn SignScheme {
+        &Scheme
     }
-    fn verify(&self, msg: &[u8], signature: &[u8], opts: Option<&SignatureOpts>) -> Result<(), CryptoError> {
-        if let Some(o) = opts {
-            if !o.context.is_empty() { return Err(Error::ContextNotSupported.into()); }
-        }
-        self.verify_internal(msg, signature).map_err(Into::into)
+
+    fn equal(&self, other: &dyn SignPublicKey) -> bool {
+        other
+            .marshal_binary()
+            .map(|b| b.len() == PUBLIC_KEY_SIZE && b.as_slice().ct_eq(&self.0.to_bytes()).into())
+            .unwrap_or(false)
+    }
+
+    fn marshal_binary(&self) -> Result<Vec<u8>, CryptoError> {
+        Ok(self.0.to_bytes().to_vec())
     }
 }
 
@@ -159,21 +174,21 @@ impl SignPublicKey for PublicKey {
 // PrivateKey
 // ---------------------------------------------------------------------------
 
-// A newtype wrapper so we can manually zeroize the secret key.
 pub struct ZeroizingSecretKey(d5::SecretKey);
 
 impl Zeroize for ZeroizingSecretKey {
     fn zeroize(&mut self) {
-        // crystals_dilithium has self-contained safe keys natively without leaking.
+        // crystals_dilithium handles its own internal security.
     }
 }
 
 impl Drop for ZeroizingSecretKey {
     fn drop(&mut self) {
-        self.zeroize(); // Standard zeroization routing
+        self.zeroize();
     }
 }
 
+#[derive(Debug)]
 pub struct PrivateKey {
     inner: ZeroizingSecretKey,
     public: PublicKey,
@@ -205,13 +220,16 @@ impl PrivateKey {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self, Error> {
         if data.len() != PRIVATE_KEY_SIZE {
-            return Err(Error::InvalidSize { expected: PRIVATE_KEY_SIZE, actual: data.len(), context: "private key" });
+            return Err(Error::InvalidSize {
+                expected: PRIVATE_KEY_SIZE,
+                actual: data.len(),
+                context: "private key",
+            });
         }
-        let mut buf = [0u8; PRIVATE_KEY_SIZE];
-        buf.copy_from_slice(data);
-        let inner = d5::SecretKey::from_bytes(&buf)
-            .map_err(|e| Error::Internal(format!("{:?}", e)))?;
-        Err(Error::Internal("cannot reconstruct public key from SK safely without full keypair... use derive_key".into()))
+        Err(Error::Internal(
+            "cannot reconstruct public key from SK safely without full keypair — use derive_key"
+                .into(),
+        ))
     }
 
     pub fn from_seed(seed: &[u8; SEED_SIZE]) -> (PublicKey, Self) {
@@ -223,7 +241,7 @@ impl PrivateKey {
             Self {
                 inner: ZeroizingSecretKey(kp.secret),
                 public: PublicKey(public_copy),
-            }
+            },
         )
     }
 }
@@ -232,22 +250,26 @@ impl Clone for PrivateKey {
     fn clone(&self) -> Self {
         let bytes = self.inner.0.to_bytes();
         let inner = d5::SecretKey::from_bytes(&bytes).expect("clone of valid key");
-        Self { inner: ZeroizingSecretKey(inner), public: self.public.clone() }
+        Self {
+            inner: ZeroizingSecretKey(inner),
+            public: self.public.clone(),
+        }
     }
 }
 
-impl fmt::Debug for PrivateKey {
+impl fmt::Debug for ZeroizingSecretKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PrivateKey")
-            .field("public", &self.public)
-            .finish_non_exhaustive()
+        f.debug_tuple("ZeroizingSecretKey").field(&"[REDACTED]").finish()
     }
 }
 
 impl PartialEq for PrivateKey {
     fn eq(&self, other: &Self) -> bool {
-        use subtle::ConstantTimeEq;
-        self.inner.0.to_bytes().ct_eq(&other.inner.0.to_bytes()).into()
+        self.inner
+            .0
+            .to_bytes()
+            .ct_eq(&other.inner.0.to_bytes())
+            .into()
     }
 }
 
@@ -260,16 +282,29 @@ impl TryFrom<Vec<u8>> for PrivateKey {
     }
 }
 
+// --- sign::PrivateKey impl --------------------------------------------------
+
 impl SignPrivateKey for PrivateKey {
-    type PubKey = PublicKey;
-    fn to_bytes(&self) -> Vec<u8> { self.inner.0.to_bytes().to_vec() }
-    fn public_key(&self) -> Self::PubKey { self.public_key_internal() }
-    fn sign(&self, msg: &[u8], opts: Option<&SignatureOpts>) -> Result<Vec<u8>, CryptoError> {
-        if let Some(o) = opts {
-            if o.prehash { return Err(Error::CannotSignHashed.into()); }
-            if !o.context.is_empty() { return Err(Error::ContextNotSupported.into()); }
-        }
-        Ok(self.sign_internal(msg))
+    fn scheme(&self) -> &dyn SignScheme {
+        &Scheme
+    }
+
+    fn equal(&self, other: &dyn SignPrivateKey) -> bool {
+        other
+            .marshal_binary()
+            .map(|b| {
+                b.len() == PRIVATE_KEY_SIZE
+                    && b.as_slice().ct_eq(&self.inner.0.to_bytes()).into()
+            })
+            .unwrap_or(false)
+    }
+
+    fn marshal_binary(&self) -> Result<Vec<u8>, CryptoError> {
+        Ok(self.inner.0.to_bytes().to_vec())
+    }
+
+    fn public_key_bytes(&self) -> Vec<u8> {
+        self.public.0.to_bytes().to_vec()
     }
 }
 
@@ -283,7 +318,10 @@ pub fn generate_key() -> Result<(PublicKey, PrivateKey), Error> {
     let public_copy = d5::PublicKey::from_bytes(&pk_bytes).expect("Valid clone via bytes");
     Ok((
         PublicKey(kp.public),
-        PrivateKey { inner: ZeroizingSecretKey(kp.secret), public: PublicKey(public_copy) },
+        PrivateKey {
+            inner: ZeroizingSecretKey(kp.secret),
+            public: PublicKey(public_copy),
+        },
     ))
 }
 
@@ -306,29 +344,21 @@ pub fn verify(pk: &PublicKey, msg: &[u8], signature: &[u8]) -> bool {
 pub struct Scheme;
 
 impl Scheme {
-    pub fn name(&self) -> &'static str { "Dilithium5" }
-    pub fn public_key_size(&self)  -> usize { PUBLIC_KEY_SIZE }
-    pub fn private_key_size(&self) -> usize { PRIVATE_KEY_SIZE }
-    pub fn signature_size(&self)   -> usize { SIGNATURE_SIZE }
-    pub fn seed_size(&self)        -> usize { SEED_SIZE }
-    pub fn supports_context(&self) -> bool { false }
-
-    pub fn derive_key(&self, seed: &[u8]) -> Result<(PublicKey, PrivateKey), Error> {
+    pub fn derive_key_with_seed(&self, seed: &[u8]) -> Result<(PublicKey, PrivateKey), Error> {
         if seed.len() != SEED_SIZE {
-            return Err(Error::InvalidSize { expected: SEED_SIZE, actual: seed.len(), context: "seed" });
+            return Err(Error::InvalidSize {
+                expected: SEED_SIZE,
+                actual: seed.len(),
+                context: "seed",
+            });
         }
         let mut s = [0u8; SEED_SIZE];
         s.copy_from_slice(seed);
-        let (pk, sk) = new_key_from_seed(&s);
-        Ok((pk, sk))
+        Ok(new_key_from_seed(&s))
     }
 
-    pub fn unmarshal_binary_public_key(&self, buf: &[u8]) -> Result<PublicKey, Error> {
+    pub fn unmarshal_binary_public_key_typed(&self, buf: &[u8]) -> Result<PublicKey, Error> {
         PublicKey::from_bytes(buf)
-    }
-
-    pub fn unmarshal_binary_private_key(&self, buf: &[u8]) -> Result<PrivateKey, Error> {
-        PrivateKey::from_bytes(buf)
     }
 }
 
@@ -336,18 +366,155 @@ pub fn scheme() -> &'static Scheme {
     &Scheme
 }
 
-impl SignScheme for Scheme {
-    type PrivKey = PrivateKey;
-    type PubKey = PublicKey;
+// --- sign::Scheme impl ------------------------------------------------------
 
-    fn generate_key(seed: &[u8]) -> Result<(Self::PrivKey, Self::PubKey), CryptoError> {
-        if seed.len() < SEED_SIZE {
-            return Err(CryptoError::CurveError("Seed too short".into()));
-        }
+impl SignScheme for Scheme {
+    fn name(&self) -> &'static str {
+        "Dilithium5"
+    }
+
+    fn public_key_size(&self) -> usize {
+        PUBLIC_KEY_SIZE
+    }
+
+    fn private_key_size(&self) -> usize {
+        PRIVATE_KEY_SIZE
+    }
+
+    fn signature_size(&self) -> usize {
+        SIGNATURE_SIZE
+    }
+
+    fn seed_size(&self) -> usize {
+        SEED_SIZE
+    }
+
+    fn supports_context(&self) -> bool {
+        false
+    }
+
+    fn generate_key(
+        &self,
+    ) -> Result<(Box<dyn SignPublicKey>, Box<dyn SignPrivateKey>), CryptoError> {
+        let (pk, sk) = generate_key().map_err(Into::<CryptoError>::into)?;
+        Ok((Box::new(pk), Box::new(sk)))
+    }
+
+    fn derive_key(&self, seed: &[u8]) -> (Box<dyn SignPublicKey>, Box<dyn SignPrivateKey>) {
+        assert!(
+            seed.len() == SEED_SIZE,
+            "{}; expected {SEED_SIZE}, got {}",
+            sign::ERR_SEED_SIZE,
+            seed.len(),
+        );
         let mut s = [0u8; SEED_SIZE];
-        s.copy_from_slice(&seed[..SEED_SIZE]);
+        s.copy_from_slice(seed);
         let (pk, sk) = new_key_from_seed(&s);
-        Ok((sk, pk))
+        (Box::new(pk), Box::new(sk))
+    }
+
+    fn sign(&self, sk: &dyn SignPrivateKey, message: &[u8], opts: Option<&SignatureOpts>) -> Vec<u8> {
+        // Dilithium does not support context strings.
+        if let Some(o) = opts {
+            if !o.context.is_empty() {
+                panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
+            }
+        }
+        let sk_bytes = sk.marshal_binary().expect("marshal dilithium SK");
+        // Re-derive from seed is not possible here; we sign via raw SK bytes.
+        // Parse the secret key directly.
+        let sk_buf: [u8; PRIVATE_KEY_SIZE] = sk_bytes
+            .try_into()
+            .unwrap_or_else(|_| panic!("{}", sign::ERR_TYPE_MISMATCH));
+        let inner = d5::SecretKey::from_bytes(&sk_buf)
+            .unwrap_or_else(|_| panic!("{}", sign::ERR_TYPE_MISMATCH));
+        inner.sign(message).to_vec()
+    }
+
+    fn verify(
+        &self,
+        pk: &dyn SignPublicKey,
+        message: &[u8],
+        signature: &[u8],
+        opts: Option<&SignatureOpts>,
+    ) -> bool {
+        if let Some(o) = opts {
+            if !o.context.is_empty() {
+                return false;
+            }
+        }
+        let pk_bytes = match pk.marshal_binary() {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let typed_pk = match PublicKey::try_from(pk_bytes) {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
+        typed_pk.verify_internal(message, signature).is_ok()
+    }
+
+    fn unmarshal_binary_public_key(
+        &self,
+        buf: &[u8],
+    ) -> Result<Box<dyn SignPublicKey>, CryptoError> {
+        PublicKey::from_bytes(buf)
+            .map(|k| Box::new(k) as Box<dyn SignPublicKey>)
+            .map_err(Into::into)
+    }
+
+    fn unmarshal_binary_private_key(
+        &self,
+        buf: &[u8],
+    ) -> Result<Box<dyn SignPrivateKey>, CryptoError> {
+        PrivateKey::from_bytes(buf)
+            .map(|sk| Box::new(sk) as Box<dyn SignPrivateKey>)
+            .map_err(Into::into)
+    }
+}
+
+// --- TypedScheme impl -------------------------------------------------------
+
+impl TypedScheme for Scheme {
+    type Pub = PublicKey;
+    type Priv = PrivateKey;
+
+    fn generate_key_typed(&self) -> Result<(PublicKey, PrivateKey), CryptoError> {
+        generate_key().map_err(Into::into)
+    }
+
+    fn derive_key_typed(&self, seed: &[u8]) -> (PublicKey, PrivateKey) {
+        assert!(seed.len() == SEED_SIZE, "{}", sign::ERR_SEED_SIZE);
+        let mut s = [0u8; SEED_SIZE];
+        s.copy_from_slice(seed);
+        new_key_from_seed(&s)
+    }
+
+    fn sign_typed(&self, sk: &PrivateKey, msg: &[u8], opts: Option<&SignatureOpts>) -> Vec<u8> {
+        if let Some(o) = opts {
+            if !o.context.is_empty() {
+                panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
+            }
+        }
+        sk.sign_internal(msg)
+    }
+
+    fn verify_typed(
+        &self,
+        pk: &PublicKey,
+        msg: &[u8],
+        sig: &[u8],
+        _opts: Option<&SignatureOpts>,
+    ) -> bool {
+        pk.verify_internal(msg, sig).is_ok()
+    }
+
+    fn unmarshal_public_key_typed(&self, buf: &[u8]) -> Result<PublicKey, CryptoError> {
+        PublicKey::from_bytes(buf).map_err(Into::into)
+    }
+
+    fn unmarshal_private_key_typed(&self, buf: &[u8]) -> Result<PrivateKey, CryptoError> {
+        PrivateKey::from_bytes(buf).map_err(Into::into)
     }
 }
 
