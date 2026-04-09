@@ -14,6 +14,7 @@ pqcrypto = "0.16"
 rand = "0.8.5"
 serde = { version = "1.0.228", features = ["derive"] }
 sha3 = "0.11.0"
+sha2 = { version = "0.10", default-features = false }
 thiserror = "2.0.18"
 zeroize = { version = "1.8.2", features = ["zeroize_derive", "derive"] }
 rand_core          = "0.6"
