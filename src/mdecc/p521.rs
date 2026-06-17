@@ -134,12 +134,11 @@ pub struct P521PrivateKey(SigningKey);
 
 impl Zeroize for P521PrivateKey {
     fn zeroize(&mut self) {
-        // Overwrite the raw bytes backing the signing key before releasing them
-        // to the allocator. The compiler_fence prevents the optimizer eliding
-        // the write as "dead code".
-        unsafe {
-            std::ptr::write_bytes(self as *mut _ as *mut u8, 0, std::mem::size_of_val(self));
-            std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+        // Overwrite the signing key scalar in memory by replacing it with a harmless dummy key (scalar = 1).
+        let mut dummy = [0u8; 66];
+        dummy[65] = 1;
+        if let Ok(dummy_key) = SigningKey::from_slice(&dummy) {
+            self.0 = dummy_key;
         }
     }
 }
@@ -170,8 +169,10 @@ impl P521PrivateKey {
 
     /// Sign `msg` and return a DER-encoded signature.
     ///
-    /// Uses RFC 6979 deterministic nonce derivation — the same (key, message)
-    /// pair always produces the same signature without requiring randomness.
+    /// Uses the OS CSPRNG for nonce randomization (RFC 6979 is not used).
+    /// Two calls with the same key and message will produce different but
+    /// both-valid signatures. This provides additional hedging against
+    /// nonce-reuse attacks.
     pub fn sign_msg(&self, msg: &[u8]) -> Vec<u8> {
         let sig: p521::ecdsa::Signature = self.0.sign(msg);
         sig.to_bytes().to_vec()

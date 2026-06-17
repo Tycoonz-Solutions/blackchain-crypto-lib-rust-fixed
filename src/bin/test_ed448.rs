@@ -2,7 +2,7 @@ use blackchain_crypto_lib_rust::mdecc::ed448::{
     generate_key, new_key_from_seed, new_curve448_scheme,
     PRIVATE_KEY_SIZE, PUBLIC_KEY_SIZE, SEED_SIZE, SIGNATURE_SIZE,
 };
-use blackchain_crypto_lib_rust::sign::{SignatureOpts, Scheme, PublicKey as SignPub, PrivateKey as SignPriv, TypedScheme};
+use blackchain_crypto_lib_rust::sign::{SignatureOpts, Scheme, PublicKey as SignPub, PrivateKey as SignPriv};
 use rand_core::{OsRng, RngCore};
 
 fn main() {

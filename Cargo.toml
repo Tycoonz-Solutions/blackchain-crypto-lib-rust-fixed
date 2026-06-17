@@ -6,14 +6,15 @@ edition = "2024"
 [dependencies]
 alloy-primitives = { version = "1.5.7", features = ["rlp", "serde"] }
 alloy-rlp = "0.3.13"
+bip32 = "0.5"
 bip39 = "2.2.2"
 ed448-rust = "0.1.1"
 getrandom = "0.4.2"
+hkdf = "0.12"
 p521 = "0.13.3"
-pqcrypto = "0.16"
 rand = "0.8.5"
 serde = { version = "1.0.228", features = ["derive"] }
-sha3 = "0.11.0"
+sha3 = "0.10"
 sha2 = { version = "0.10", default-features = false }
 thiserror = "2.0.18"
 zeroize = { version = "1.8.2", features = ["zeroize_derive", "derive"] }
@@ -21,6 +22,5 @@ rand_core          = "0.6"
 rand_chacha        = "0.3"
 subtle             = "2"
 hex                = "0.4"
-pqc_dilithium = { version = "0.2.0", features = ["mode5"] }
 crystals-dilithium = "2.0.0"
 ed448-goldilocks = "0.9.0"

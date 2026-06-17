@@ -65,27 +65,33 @@ pub const ERR_CONTEXT_TOO_LONG: &str = "context string too long";
 // Used internally so call-sites stay readable.
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub(crate) fn err_type_mismatch() -> CryptoError {
     CryptoError::Custom(ERR_TYPE_MISMATCH.into())
 }
+#[allow(dead_code)]
 pub(crate) fn err_seed_size() -> CryptoError {
     CryptoError::SeedError(ERR_SEED_SIZE.into())
 }
-pub(crate) fn err_pub_key_size() -> CryptoError {
+#[allow(dead_code)]
+pub(crate) fn err_pub_key_size(expected: usize, actual: usize) -> CryptoError {
     CryptoError::InvalidKeySize {
-        expected: 0,
-        actual: 0,
+        expected,
+        actual,
     }
 }
-pub(crate) fn err_priv_key_size() -> CryptoError {
+#[allow(dead_code)]
+pub(crate) fn err_priv_key_size(expected: usize, actual: usize) -> CryptoError {
     CryptoError::InvalidKeySize {
-        expected: 0,
-        actual: 0,
+        expected,
+        actual,
     }
 }
+#[allow(dead_code)]
 pub(crate) fn err_context_not_supported() -> CryptoError {
     CryptoError::Custom(ERR_CONTEXT_NOT_SUPPORTED.into())
 }
+#[allow(dead_code)]
 pub(crate) fn err_context_too_long() -> CryptoError {
     CryptoError::Custom(ERR_CONTEXT_TOO_LONG.into())
 }
@@ -287,6 +293,11 @@ pub trait Scheme: Send + Sync {
     ///
     /// Equivalent to Go's `Scheme.SupportsContext()`.
     fn supports_context(&self) -> bool;
+
+    /// Whether this scheme supports private key deserialisation from bytes.
+    fn supports_priv_key_unmarshal(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -178,12 +178,10 @@ pub struct ZeroizingSecretKey(d5::SecretKey);
 
 impl Zeroize for ZeroizingSecretKey {
     fn zeroize(&mut self) {
-        // crystals_dilithium handles its own internal security, but for defense-in-depth,
-        // we explicitly zero the memory backing the struct. Since SecretKey is a fixed-size
-        // buffer internally, this ensures the key material is scrubbed immediately upon Drop.
-        unsafe {
-            std::ptr::write_bytes(self as *mut _ as *mut u8, 0, std::mem::size_of_val(self));
-            std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+        let mut raw = self.0.to_bytes();
+        raw.zeroize();
+        if let Ok(zeroed) = d5::SecretKey::from_bytes(&raw) {
+            self.0 = zeroed;
         }
     }
 }
@@ -483,11 +481,16 @@ impl SignScheme for Scheme {
 
     fn unmarshal_binary_private_key(
         &self,
-        buf: &[u8],
+        _buf: &[u8],
     ) -> Result<Box<dyn SignPrivateKey>, CryptoError> {
-        PrivateKey::from_bytes(buf)
-            .map(|sk| Box::new(sk) as Box<dyn SignPrivateKey>)
-            .map_err(Into::into)
+        Err(CryptoError::Custom(
+            "Dilithium5 private key cannot be reconstructed from bytes alone; \
+             use derive_key() with the original seed instead".into(),
+        ))
+    }
+
+    fn supports_priv_key_unmarshal(&self) -> bool {
+        false
     }
 }
 

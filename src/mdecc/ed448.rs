@@ -240,6 +240,11 @@ impl PublicKey {
         };
         hasher.update(&[phflag]);
         let ctx_bytes = ctx.unwrap_or(b"");
+        if ctx_bytes.len() > 255 {
+            return Err(CryptoError::SignatureError(
+                "Ed448 context string exceeds 255 bytes".into(),
+            ));
+        }
         hasher.update(&[ctx_bytes.len() as u8]);
         hasher.update(ctx_bytes);
 
@@ -279,7 +284,6 @@ impl PublicKey {
         if lhs.double().double() == ExtendedPoint::identity() {
             Ok(())
         } else {
-            println!("lhs != identity. S = {:?}, A = {:?}", s_bytes, self.raw);
             Err(CryptoError::SignatureError(
                 "ed448 verification equation failed".into(),
             ))
@@ -427,9 +431,9 @@ impl Eq for PrivateKey {}
 
 impl Drop for PrivateKey {
     fn drop(&mut self) {
-        let mut arr = [0u8; SEED_SIZE];
-        arr.copy_from_slice(self.inner.as_bytes());
-        arr.zeroize();
+        let zero_arr = [0u8; SEED_SIZE];
+        self.inner = Ed448Priv::from(zero_arr);
+        self.public.raw.zeroize();
     }
 }
 
@@ -565,7 +569,7 @@ impl SchemeTrait for Curve448Scheme {
         // Uses from_bytes → goldilocks-validated, then verify_via_goldilocks.
         let typed_pk = match PublicKey::try_from(pk_bytes) {
             Ok(k) => k,
-            Err(_) => panic!("{}", sign::ERR_TYPE_MISMATCH),
+            Err(_) => return false,
         };
         typed_pk.verify_sig(message, signature, opts).is_ok()
     }
@@ -801,8 +805,6 @@ mod tests {
     fn scheme_dyn_sign_verify() {
         let s = new_curve448_scheme();
         let (pk, sk) = s.generate_key().unwrap();
-        println!("pk: {:?}", pk);
-        println!("sk: {:?}", sk);
         let sig = s.sign(sk.as_ref(), b"dyn test", None);
         assert!(s.verify(pk.as_ref(), b"dyn test", &sig, None));
     }
