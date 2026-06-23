@@ -3,19 +3,19 @@
 // Crate roles (verified against actual published APIs):
 //
 //   ed448-rust 0.1.1
-//     ✅ PrivateKey::from([u8;57])  — seed → key expansion (SHAKE-256), correct
-//     ✅ PrivateKey::sign(msg, ctx) — signs with in-memory key, correct
-//     ✅ PrivateKey::as_bytes()     — returns seed bytes
-//     ✅ PublicKey::from(&PrivateKey) — derives pk from sk in-memory, correct
-//     ✅ PublicKey::as_byte()       — returns raw [u8;57] of the point
-//     ❌ PublicKey::try_from(&[u8]) — BUG: casts bytes as scalar, no decompression
-//                                     → NEVER use for deserialization
+//      PrivateKey::from([u8;57])  — seed → key expansion (SHAKE-256), correct
+//      PrivateKey::sign(msg, ctx) — signs with in-memory key, correct
+//      PrivateKey::as_bytes()     — returns seed bytes
+//      PublicKey::from(&PrivateKey) — derives pk from sk in-memory, correct
+//      PublicKey::as_byte()       — returns raw [u8;57] of the point
+//      PublicKey::try_from(&[u8]) — BUG: casts bytes as scalar, no decompression
+//                                    → NEVER use for deserialization
 //
 //   ed448-goldilocks 0.4.0
-//     ✅ CompressedEdwardsY([u8;57]).decompress() -> Option<ExtendedPoint>
-//     ✅ ExtendedPoint: scalar_mul, add, negate, compress, generator
-//     ✅ Scalar: from_bytes, to_bytes
-//     ❌ No signing API (no SigningKey / VerifyingKey in this version)
+//      CompressedEdwardsY([u8;57]).decompress() -> Option<ExtendedPoint>
+//      ExtendedPoint: scalar_mul, add, negate, compress, generator
+//      Scalar: from_bytes, to_bytes
+//      No signing API (no SigningKey / VerifyingKey in this version)
 //
 // Strategy
 // ────────
