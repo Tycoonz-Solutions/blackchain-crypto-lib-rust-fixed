@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod crypto;
 pub mod dilithium;
 pub mod error;
@@ -14,3 +16,4 @@ pub use hdwallet::derivation::{
 };
 pub use sign::{PrivateKey, PublicKey, Scheme};
 pub use transaction::types::BlackChainTxType;
+pub use zeroize::Zeroizing;

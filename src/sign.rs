@@ -199,6 +199,16 @@ pub trait PrivateKey: Send + Sync + fmt::Debug {
 /// A specific instance of a signature scheme.
 ///
 /// Mirrors Go's `sign.Scheme` interface method-for-method.
+///
+/// > [!WARNING]
+/// > **Safety Warning**: Methods on this trait (`sign`, `verify`, `derive_key`) can **panic**
+/// > on invalid input, incorrect key types, or unsupported context strings, matching the
+/// > Go reference library's panic-on-error contract. This trait is **not safe** for direct
+/// > use with untrusted input where panics must be avoided.
+/// >
+/// > For production transaction signing and verification, use the statically-typed,
+/// > `Result`-returning methods: [`crate::transaction::types::BlackChainTxType::sign_transaction`]
+/// > and [`crate::transaction::types::BlackChainTxType::recover_sender`].
 pub trait Scheme: Send + Sync {
     /// Name of the scheme, e.g. `"Ed448"` or `"Dilithium5"`.
     ///
@@ -313,6 +323,11 @@ pub trait Scheme: Send + Sync {
 ///
 /// Implement this alongside `Scheme` when concrete key types are preferred
 /// over `Box<dyn PublicKey>` / `Box<dyn PrivateKey>`.
+///
+/// > [!WARNING]
+/// > **Safety Warning**: Like [`Scheme`], methods on this trait (`sign_typed`, `verify_typed`,
+/// > `derive_key_typed`) can **panic** on invalid input or incorrect configuration. Use
+/// > with care on untrusted inputs.
 pub trait TypedScheme {
     /// The concrete public key type.
     type Pub: PublicKey + Clone + PartialEq;

@@ -9,8 +9,8 @@
 //   - Uncompressed SEC1 public keys are 133 bytes (0x04 || x || y).
 //   - DER-encoded ECDSA signatures are variable-length; maximum for P-521 is
 //     139 bytes (tag + length + r + s, each ≤ 66 bytes + overhead).
-//   - Signatures use RFC 6979 deterministic nonce derivation, so the same
-//     (key, message) pair always yields the same signature.
+//   - Signatures use randomized ECDSA nonces (OS CSPRNG), so signing the same
+//     (key, message) pair multiple times will yield different signatures.
 
 use p521::ecdsa::{SigningKey, VerifyingKey, signature::Signer, signature::Verifier};
 use sha2::{Digest, Sha512};

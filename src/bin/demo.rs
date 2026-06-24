@@ -1,8 +1,8 @@
-use blackchain_crypto_lib_rust::{
-    generate_mnemonic, seed_from_mnemonic, parse_hardened_path, derive_child_seed,
-    BlackChainPrivateKey, BlackChainTxType,
-};
 use alloy_primitives::{Address, Bytes, U256};
+use blackchain_crypto_lib_rust::{
+    BlackChainPrivateKey, BlackChainTxType, derive_child_seed, generate_mnemonic,
+    parse_hardened_path, seed_from_mnemonic,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=========================================================================");
@@ -34,7 +34,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("  Deriving child seed via BIP32 (Hardened-only path)...");
     let child_seed = derive_child_seed(&root_seed, &path)?;
-    println!("  Derived Child Seed Hex (64 bytes): {}", hex::encode(&child_seed));
+    println!(
+        "  Derived Child Seed Hex (64 bytes): {}",
+        hex::encode(&child_seed)
+    );
 
     // -------------------------------------------------------------------------
     // Step 4: Generate Composite Keypair (Dilithium5 + P-521 + Ed448)
@@ -42,15 +45,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n[STEP 4] Generating hybrid keypair from the child seed...");
     let (priv_key, pub_key) = BlackChainPrivateKey::generate(&child_seed)?;
     println!("  Composite Private Key structure derived (Zeroized on drop).");
-    println!("    - Dilithium5 SK: {} bytes", priv_key.dilithium_bytes().len());
+    println!(
+        "    - Dilithium5 SK: {} bytes",
+        priv_key.dilithium_bytes().len()
+    );
     println!("    - P-521 SK: {} bytes", priv_key.p521_bytes().len());
     println!("    - Ed448 SK: {} bytes", priv_key.ed448_bytes().len());
-    
+
     let pub_key_bytes = pub_key.to_bytes();
-    println!("  Composite Public Key serialized ({} bytes):", pub_key_bytes.len());
-    println!("    - Dilithium5 PK: {} bytes (Prefix: 0x{})", pub_key.dilithium_bytes().len(), hex::encode(&pub_key.dilithium_bytes()[..8]));
-    println!("    - P-521 PK: {} bytes (Prefix: 0x{})", pub_key.p521_bytes().len(), hex::encode(&pub_key.p521_bytes()[..8]));
-    println!("    - Ed448 PK: {} bytes (Prefix: 0x{})", pub_key.ed448_bytes().len(), hex::encode(&pub_key.ed448_bytes()[..8]));
+    println!(
+        "  Composite Public Key serialized ({} bytes):",
+        pub_key_bytes.len()
+    );
+    println!(
+        "    - Dilithium5 PK: {} bytes (Prefix: 0x{})",
+        pub_key.dilithium_bytes().len(),
+        hex::encode(&pub_key.dilithium_bytes()[..8])
+    );
+    println!(
+        "    - P-521 PK: {} bytes (Prefix: 0x{})",
+        pub_key.p521_bytes().len(),
+        hex::encode(&pub_key.p521_bytes()[..8])
+    );
+    println!(
+        "    - Ed448 PK: {} bytes (Prefix: 0x{})",
+        pub_key.ed448_bytes().len(),
+        hex::encode(&pub_key.ed448_bytes()[..8])
+    );
 
     // -------------------------------------------------------------------------
     // Step 5: Derive Wallet Address
@@ -67,10 +88,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         chain_id: 1,
         nonce: 12,
         max_priority_fee_per_gas: U256::from(1_500_000_000u64), // 1.5 gwei
-        max_fee_per_gas: U256::from(30_000_000_000u64),        // 30 gwei
+        max_fee_per_gas: U256::from(30_000_000_000u64),         // 30 gwei
         gas_limit: 21_000,
         to: Some(Address::repeat_byte(0xaa)),
-        value: U256::from(100_000_000_000_000_000u64),         // 0.1 ETH
+        value: U256::from(100_000_000_000_000_000u64), // 0.1 ETH
         data: Bytes::from(vec![0xba, 0xad, 0xf0, 0x0d]),
         v: None,
         r: None,
@@ -78,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pqc_signature: None,
         pub_key: None,
     };
-    
+
     let sig_hash = tx.signature_hash();
     println!("  Unsigned Tx Hash to sign: 0x{}", hex::encode(sig_hash));
 
@@ -86,20 +107,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 7: Sign Transaction In-Place
     // -------------------------------------------------------------------------
     println!("\n[STEP 7] Signing the transaction with hybrid private key...");
-    println!("  (This performs entanglement nonce expansion, H_combined binding, and signs across all 3 algorithms)");
+    println!(
+        "  (This performs entanglement nonce expansion, H_combined binding, and signs across all 3 algorithms)"
+    );
     tx.sign_transaction(&priv_key)?;
-    
+
     let signature = tx.pqc_signature.as_ref().unwrap();
     println!("  Transaction signed successfully!");
-    println!("  Total Composite Signature length: {} bytes", signature.len());
-    println!("    - Signature Hex (Prefix): 0x{}", hex::encode(&signature[..32]));
-    println!("    - Embedded Public Key Length: {} bytes", tx.pub_key.as_ref().unwrap().len());
-    println!("    - Placeholders: v={:?}, r={:?}, s={:?}", tx.v, tx.r, tx.s);
+    println!(
+        "  Total Composite Signature length: {} bytes",
+        signature.len()
+    );
+    println!(
+        "    - Signature Hex (Prefix): 0x{}",
+        hex::encode(&signature[..32])
+    );
+    println!(
+        "    - Embedded Public Key Length: {} bytes",
+        tx.pub_key.as_ref().unwrap().len()
+    );
+    println!(
+        "    - Placeholders: v={:?}, r={:?}, s={:?}",
+        tx.v, tx.r, tx.s
+    );
 
     // -------------------------------------------------------------------------
     // Step 8: Recover Sender (Signature Verification)
     // -------------------------------------------------------------------------
-    println!("\n[STEP 8] Recovering and verifying the sender's address from the signed transaction...");
+    println!(
+        "\n[STEP 8] Recovering and verifying the sender's address from the signed transaction..."
+    );
     let recovered_address = tx.recover_sender()?;
     println!("  Recovered Sender Address: {:?}", recovered_address);
 

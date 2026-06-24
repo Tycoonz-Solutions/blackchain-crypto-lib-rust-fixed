@@ -9,10 +9,10 @@
 // and a curve identifier byte, produces a cryptographically independent seed
 // of the requested length:
 //
-//   1. shaken  = SHAKE256(mdECC_seed ‖ curve_id)[0..8]
+//   1. shaken  = SHAKE256(mdECC_seed ‖ curve_id)[0..32]
 //   2. output  = HKDF-SHA3-512(IKM=shaken, salt=∅, info=∅)[0..seed_size]
 //
-// Each curve receives a unique 8-byte IKM (domain-separated by the curve ID)
+// Each curve receives a unique 32-byte IKM (domain-separated by the curve ID)
 // before HKDF expansion, so the Dilithium, P-521, and Ed448 key material are
 // mutually independent even though they share a common root.
 //
@@ -32,6 +32,7 @@ use sha3::{
     digest::{ExtendableOutput, Update, XofReader},
     Sha3_512, Shake256,
 };
+use zeroize::Zeroizing;
 
 use crate::error::CryptoError;
 
@@ -66,11 +67,15 @@ pub fn derive_mdecc_curve_seed(
     curve_id: u8,
     seed_size: usize,
 ) -> Result<Vec<u8>, CryptoError> {
-    // Step 1: SHAKE256(mdECC_seed ‖ curve_id) → 8 bytes
+    // Step 1: SHAKE256(mdECC_seed ‖ curve_id) → 32 bytes
+    //
+    // The IKM must be at least as long as the target security level.
+    // P-521 targets 256-bit security and Ed448 targets 224-bit security,
+    // so 32 bytes (256 bits) is the minimum safe IKM length.
     let mut shake = Shake256::default();
     shake.update(mdecc_seed);
     shake.update(&[curve_id]);
-    let mut shaken = [0u8; 8];
+    let mut shaken = [0u8; 32];
     shake.finalize_xof().read(&mut shaken);
 
     // Step 2: HKDF-SHA3-512(IKM=shaken, salt=∅, info=∅) → seed_size bytes
@@ -101,7 +106,7 @@ pub fn derive_mdecc_curve_seed(
 /// # Errors
 /// - `Err` if any path index is not hardened.
 /// - `Err` if BIP32 derivation fails (e.g. invalid master seed length).
-pub fn derive_child_seed(master_seed: &[u8], path: &[u32]) -> Result<Vec<u8>, CryptoError> {
+pub fn derive_child_seed(master_seed: &[u8], path: &[u32]) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
     // Enforce hardened-only policy (matches Go's DeriveKey validation).
     for (i, &idx) in path.iter().enumerate() {
         if idx < 0x8000_0000 {
@@ -134,7 +139,7 @@ pub fn derive_child_seed(master_seed: &[u8], path: &[u32]) -> Result<Vec<u8>, Cr
     let mut child_seed = Vec::with_capacity(64);
     child_seed.extend_from_slice(&priv_bytes);
     child_seed.extend_from_slice(&chain_code);
-    Ok(child_seed)
+    Ok(Zeroizing::new(child_seed))
 }
 
 /// Parses a BIP32 derivation path string (e.g. `"44/60/0/0/0"` or

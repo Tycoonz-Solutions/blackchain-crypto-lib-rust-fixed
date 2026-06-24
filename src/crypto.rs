@@ -101,10 +101,20 @@ impl BlackChainPublicKey {
                 actual: bytes.len(),
             });
         }
-        let dil = bytes[..DIL_PK_SIZE].to_vec();
-        let p521 = bytes[DIL_PK_SIZE..DIL_PK_SIZE + P521_PK_SIZE].to_vec();
-        let ed448 = bytes[DIL_PK_SIZE + P521_PK_SIZE..].to_vec();
-        Ok(Self { dilithium: dil, p521, ed448 })
+        let dil_bytes = &bytes[..DIL_PK_SIZE];
+        let p521_bytes = &bytes[DIL_PK_SIZE..DIL_PK_SIZE + P521_PK_SIZE];
+        let ed448_bytes = &bytes[DIL_PK_SIZE + P521_PK_SIZE..];
+
+        // Validate individual sub-keys
+        crate::dilithium::PublicKey::from_bytes(dil_bytes)?;
+        crate::mdecc::p521::P521PublicKey::from_bytes(p521_bytes)?;
+        crate::mdecc::ed448::PublicKey::from_bytes(ed448_bytes)?;
+
+        Ok(Self {
+            dilithium: dil_bytes.to_vec(),
+            p521: p521_bytes.to_vec(),
+            ed448: ed448_bytes.to_vec(),
+        })
     }
 
     /// Derives the 20-byte BlackChain address by Keccak256-hashing all

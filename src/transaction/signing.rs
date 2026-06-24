@@ -54,12 +54,13 @@ pub const MIN_COMPOSITE_SIG_SIZE: usize = DIL_SIG_BYTES + 8 + ED448_SIG_BYTES;
 // ---------------------------------------------------------------------------
 
 /// Computes the 16-byte entanglement nonce:
-///   SHAKE256("entangle" ‖ ALGO_ID ‖ VERSION ‖ address)[0..16]
-fn compute_entanglement_nonce(address: &Address) -> [u8; 16] {
+///   SHAKE256("entangle" ‖ ALGO_ID ‖ VERSION ‖ chain_id_be_bytes ‖ address)[0..16]
+fn compute_entanglement_nonce(chain_id: u64, address: &Address) -> [u8; 16] {
     let mut shake = Shake256::default();
     shake.update(b"entangle");
     shake.update(&[ALGO_ID]);
     shake.update(&[VERSION]);
+    shake.update(&chain_id.to_be_bytes());
     shake.update(address.as_slice());
     let mut nonce = [0u8; 16];
     shake.finalize_xof().read(&mut nonce);
@@ -131,7 +132,7 @@ impl BlackChainTxType {
         let address = pub_key.derive_address();
 
         // ── Entanglement nonce & H_combined ───────────────────────────────
-        let entg_nonce = compute_entanglement_nonce(&address);
+        let entg_nonce = compute_entanglement_nonce(self.chain_id, &address);
         let h_combined = compute_h_combined(&pub_key, &entg_nonce);
 
         // ── Dilithium5 signature (raw hash) ───────────────────────────────
@@ -211,7 +212,7 @@ impl BlackChainTxType {
 
         // ── Reconstruct H_combined ────────────────────────────────────────
         let address = pub_key.derive_address();
-        let entg_nonce = compute_entanglement_nonce(&address);
+        let entg_nonce = compute_entanglement_nonce(self.chain_id, &address);
         let h_combined = compute_h_combined(&pub_key, &entg_nonce);
 
         // ── Parse composite signature: dil ‖ p521 ‖ ed448 ────────────────
