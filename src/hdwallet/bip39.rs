@@ -31,7 +31,7 @@ pub fn generate_mnemonic() -> Result<String, CryptoError> {
         .map_err(|e| CryptoError::Custom(e.to_string()))?;
 
     let mnemonic = Mnemonic::from_entropy(&entropy)
-        .map_err(|e| CryptoError::Bip39Error(e.into()))?;
+        .map_err(CryptoError::Bip39Error)?;
     Ok(mnemonic.to_string())
 }
 
@@ -59,7 +59,7 @@ pub fn seed_from_mnemonic(phrase: &str, password: &str) -> Result<Zeroizing<Vec<
     }
 
     let mnemonic = Mnemonic::parse(phrase)
-        .map_err(|e| CryptoError::Bip39Error(e.into()))?;
+        .map_err(CryptoError::Bip39Error)?;
 
     Ok(Zeroizing::new(mnemonic.to_seed(password).to_vec()))
 }

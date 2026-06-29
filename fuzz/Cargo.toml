@@ -1,0 +1,29 @@
+[package]
+name = "blackchain-crypto-lib-rust-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+alloy-rlp = "0.3.13"
+
+[dependencies.blackchain-crypto-lib-rust]
+path = ".."
+
+[[bin]]
+name = "fuzz_tx_decode"
+path = "fuzz_targets/fuzz_tx_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_pubkey_parse"
+path = "fuzz_targets/fuzz_pubkey_parse.rs"
+test = false
+doc = false
+bench = false

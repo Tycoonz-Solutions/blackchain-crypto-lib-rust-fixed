@@ -222,6 +222,7 @@ pub trait Scheme: Send + Sync {
     /// Generates a fresh key pair using the system CSPRNG.
     ///
     /// Equivalent to Go's `Scheme.GenerateKey()`.
+    #[allow(clippy::type_complexity)]
     fn generate_key(&self) -> Result<(Box<dyn PublicKey>, Box<dyn PrivateKey>), CryptoError>;
 
     /// Deterministically derives a key pair from `seed`.

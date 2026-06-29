@@ -431,10 +431,9 @@ impl SignScheme for Scheme {
         opts: Option<&SignatureOpts>,
     ) -> Vec<u8> {
         // Dilithium does not support context strings.
-        if let Some(o) = opts {
-            if !o.context.is_empty() {
-                panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
-            }
+        if let Some(o) = opts
+            && !o.context.is_empty() {
+            panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
         }
         let sk_bytes = sk.marshal_binary().expect("marshal dilithium SK");
         // Re-derive from seed is not possible here; we sign via raw SK bytes.
@@ -454,10 +453,9 @@ impl SignScheme for Scheme {
         signature: &[u8],
         opts: Option<&SignatureOpts>,
     ) -> bool {
-        if let Some(o) = opts {
-            if !o.context.is_empty() {
-                return false;
-            }
+        if let Some(o) = opts
+            && !o.context.is_empty() {
+            return false;
         }
         let pk_bytes = match pk.marshal_binary() {
             Ok(b) => b,
@@ -512,10 +510,9 @@ impl TypedScheme for Scheme {
     }
 
     fn sign_typed(&self, sk: &PrivateKey, msg: &[u8], opts: Option<&SignatureOpts>) -> Vec<u8> {
-        if let Some(o) = opts {
-            if !o.context.is_empty() {
-                panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
-            }
+        if let Some(o) = opts
+            && !o.context.is_empty() {
+            panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
         }
         sk.sign_internal(msg)
     }

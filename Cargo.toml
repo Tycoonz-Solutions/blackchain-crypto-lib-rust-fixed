@@ -2,7 +2,7 @@
 name = "blackchain-crypto-lib-rust"
 version = "0.1.0"
 edition = "2024"
-
+rust-version = "1.85.0"
 [dependencies]
 alloy-primitives = { version = "1.5.7", features = ["rlp", "serde"] }
 alloy-rlp = "0.3.13"
@@ -24,3 +24,11 @@ subtle             = "2"
 hex                = "0.4"
 crystals-dilithium = "2.0.0"
 ed448-goldilocks = "0.9.0"
+
+[dev-dependencies]
+proptest = "1.5.0"
+criterion = "0.5.1"
+
+[[bench]]
+name = "latency"
+harness = false

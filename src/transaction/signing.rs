@@ -133,7 +133,7 @@ impl BlackChainTxType {
 
         // ── Entanglement nonce & H_combined ───────────────────────────────
         let entg_nonce = compute_entanglement_nonce(self.chain_id, &address);
-        let h_combined = compute_h_combined(&pub_key, &entg_nonce);
+        let h_combined = compute_h_combined(pub_key, &entg_nonce);
 
         // ── Dilithium5 signature (raw hash) ───────────────────────────────
         // Use crystals_dilithium directly to avoid the PrivateKey roundtrip
@@ -176,7 +176,7 @@ impl BlackChainTxType {
         // ── Write fields to tx ────────────────────────────────────────────
         self.pqc_signature = Some(Bytes::from(composite));
         self.pub_key = Some(Bytes::from(pub_key.to_bytes()));
-        self.v = Some(U256::from(self.chain_id * 2 + 35)); // EIP-155 placeholder
+        self.v = Some(U256::from(self.chain_id) * U256::from(2) + U256::from(35)); // EIP-155 placeholder
         self.r = Some(U256::ZERO);
         self.s = Some(U256::ZERO);
 

@@ -224,15 +224,15 @@ impl BlackChainPrivateKey {
 
         // ── P-521 ─────────────────────────────────────────────────────────────
         let p521_seed = Zeroizing::new(derive_mdecc_curve_seed(mdecc_seed, CURVE_ID_P521, P521_SEED)?);
-        let (p521_pk, p521_sk) = P521Scheme.derive_key_typed(&*p521_seed);
+        let (p521_pk, p521_sk) = P521Scheme.derive_key_typed(&p521_seed);
 
         // ── Ed448 ─────────────────────────────────────────────────────────────
         let ed448_seed = Zeroizing::new(derive_mdecc_curve_seed(mdecc_seed, CURVE_ID_ED448, ED448_SEED)?);
-        let (ed448_pk, ed448_sk) = ed448_key_from_seed(&*ed448_seed);
+        let (ed448_pk, ed448_sk) = ed448_key_from_seed(&ed448_seed);
 
         // Dilithium5 SK: pack() into a fixed array
         let mut dil_sk_buf = Zeroizing::new([0u8; DIL_SK_SIZE]);
-        dil_sk.pack(&mut *dil_sk_buf);
+        dil_sk.pack(&mut dil_sk_buf);
 
         // Dilithium5 PK: pack() into a fixed array
         let mut dil_pk_buf = [0u8; DIL_PK_SIZE];
@@ -268,10 +268,10 @@ impl BlackChainPrivateKey {
 
         let mdecc_seed = &seed[32..48];
         let p521_seed = Zeroizing::new(derive_mdecc_curve_seed(mdecc_seed, CURVE_ID_P521, P521_SEED)?);
-        let (p521_pk, _) = P521Scheme.derive_key_typed(&*p521_seed);
+        let (p521_pk, _) = P521Scheme.derive_key_typed(&p521_seed);
 
         let ed448_seed = Zeroizing::new(derive_mdecc_curve_seed(mdecc_seed, CURVE_ID_ED448, ED448_SEED)?);
-        let (ed448_pk, _) = ed448_key_from_seed(&*ed448_seed);
+        let (ed448_pk, _) = ed448_key_from_seed(&ed448_seed);
 
         let mut dil_pk_buf = [0u8; DIL_PK_SIZE];
         dil_pk.pack(&mut dil_pk_buf);

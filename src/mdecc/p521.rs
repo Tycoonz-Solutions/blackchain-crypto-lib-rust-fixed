@@ -343,10 +343,9 @@ impl SignScheme for P521Scheme {
         opts: Option<&SignatureOpts>,
     ) -> Vec<u8> {
         // P-521 ECDSA does not support context strings; panic to enforce the contract.
-        if let Some(o) = opts {
-            if !o.context.is_empty() {
-                panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
-            }
+        if let Some(o) = opts
+            && !o.context.is_empty() {
+            panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
         }
         let sk_bytes = sk.marshal_binary().expect("marshal P521 SK");
         let typed_sk = P521PrivateKey::from_bytes(&sk_bytes)
@@ -363,10 +362,9 @@ impl SignScheme for P521Scheme {
     ) -> bool {
         // A non-empty context is not supported; return false rather than panic
         // (verify is never expected to panic in the dyn contract).
-        if let Some(o) = opts {
-            if !o.context.is_empty() {
-                return false;
-            }
+        if let Some(o) = opts
+            && !o.context.is_empty() {
+            return false;
         }
         let pk_bytes = match pk.marshal_binary() {
             Ok(b) => b,
@@ -409,10 +407,9 @@ impl TypedScheme for P521Scheme {
     }
 
     fn sign_typed(&self, sk: &P521PrivateKey, msg: &[u8], opts: Option<&SignatureOpts>) -> Vec<u8> {
-        if let Some(o) = opts {
-            if !o.context.is_empty() {
-                panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
-            }
+        if let Some(o) = opts
+            && !o.context.is_empty() {
+            panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
         }
         sk.sign_msg(msg)
     }
@@ -460,8 +457,10 @@ mod tests {
             SEED_SIZE, PRIVATE_KEY_SIZE,
             "seed and private key are the same size"
         );
+        let sig_size = SIGNATURE_SIZE;
+        let priv_key_size = PRIVATE_KEY_SIZE;
         assert!(
-            SIGNATURE_SIZE > PRIVATE_KEY_SIZE,
+            sig_size > priv_key_size,
             "max DER signature must be larger than the scalar"
         );
     }

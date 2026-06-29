@@ -91,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dil_pk_buf = [0u8; DIL_PK_SIZE];
     dil_pk.pack(&mut dil_pk_buf);
     let mut dil_sk_buf = Zeroizing::new([0u8; DIL_SK_SIZE]);
-    dil_sk.pack(&mut *dil_sk_buf);
+    dil_sk.pack(&mut dil_sk_buf);
 
     println!(
         "  Dilithium5 Public Key ({} bytes, Prefix): 0x{}",
@@ -154,12 +154,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "  Ed448 Public Key ({} bytes): 0x{}",
         ED448_PK_SIZE,
-        hex::encode(&ed448_pk_bytes)
+        hex::encode(ed448_pk_bytes)
     );
     println!(
         "  Ed448 Private Key ({} bytes seed format): 0x{}",
         ED448_SK_SIZE,
-        hex::encode(&ed448_sk_bytes)
+        hex::encode(ed448_sk_bytes)
     );
 
     // -------------------------------------------------------------------------
