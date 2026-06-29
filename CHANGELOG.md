@@ -8,12 +8,13 @@ All notable changes to this project will be documented in this file. This projec
 - **Hybrid Post-Quantum Cryptographic Suite**: Implemented composite key generation, signing, and recovery using Dilithium5 (post-quantum lattice), NIST P-521, and Curve Ed448.
 - **BIP32 & BIP39 HD Wallet**: Integrated key derivation paths supporting standard 24-word seeds.
 - **Safety Documentation**: Documented potential panic vectors on `dyn Scheme` and `TypedScheme` trait bounds.
-- **Adversarial Testing Suite**: Added property-based verification using the `proptest` crate checking signature roundtrips and mutation resilience.
-- **Guided Fuzzing**: Added `cargo-fuzz` targets (`fuzz_tx_decode`, `fuzz_pubkey_parse`) for automated crash/panic testing.
-- **Benchmark Suite**: Added benchmark targets utilizing `criterion` for keygen, signing, and verification latency.
+- **Adversarial Testing Suite**: Added property-based verification using the `proptest` crate checking signature roundtrips, mutation resilience, cross-chain replay protection, and address determinism.
+- **Production-Grade Fuzz Suite**: Expanded from basic targets to a 6-target suite (`fuzz_tx_decode`, `fuzz_pubkey_parse`, `fuzz_composite_sig_verify`, `fuzz_tx_sign_recover`, `fuzz_mnemonic_seed`, `fuzz_signature_hash`) utilizing `arbitrary` structured inputs and checking explicit validation invariants.
+- **Production-Grade Benchmark Suite**: Enhanced `benches/latency.rs` to measure BIP-39 mnemonic setup, BIP-32 HD wallet path derivation, composite key serialization, transaction hashing, composite signature generation, sender recovery, and transaction payload scaling.
 - **MSRV Policy**: Configured Minimum Supported Rust Version to `1.85.0` in `Cargo.toml`.
 - **CI/CD Pipeline**: Configured GitHub Actions workflow for linting, testing, and dependency vulnerability audits via Cargo Audit.
 - **Unsafe Code Ban**: Banned all unsafe blocks via root `#![forbid(unsafe_code)]` header.
+- **Testing Documentation**: Created `FUZZING.md` with guidelines on target invariants, execution commands, and troubleshooting guides.
 
 ### Fixed
 - **mdECC Entropy Floor**: Fixed a cryptographic weakness where SHAKE256 seed derivation truncated output to 8 bytes (64 bits of entropy). Extended it to 32 bytes (256 bits).
