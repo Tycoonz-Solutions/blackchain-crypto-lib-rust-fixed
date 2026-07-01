@@ -16,23 +16,28 @@
 use std::fmt;
 
 use alloy_primitives::Address;
-use sha3::{Digest, Keccak256};
+use sha3::{Digest, Keccak256, Shake256};
+use sha3::digest::{ExtendableOutput, Update, XofReader};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use crystals_dilithium::dilithium5 as d5;
 
 use crate::dilithium::{
     new_key_from_seed as dil_key_from_seed, SEED_SIZE as DIL_SEED,
     PUBLIC_KEY_SIZE as DIL_PK_SIZE, PRIVATE_KEY_SIZE as DIL_SK_SIZE,
+    PublicKey as DilPublicKey,
 };
 use crate::error::CryptoError;
 use crate::hdwallet::derivation::{derive_mdecc_curve_seed, CURVE_ID_ED448, CURVE_ID_P521};
 use crate::mdecc::ed448::{
     new_key_from_seed as ed448_key_from_seed,
     SEED_SIZE as ED448_SEED, PUBLIC_KEY_SIZE as ED448_PK_SIZE,
+    PublicKey as Ed448PublicKey,
 };
 use crate::mdecc::p521::{
     P521Scheme, PUBLIC_KEY_SIZE as P521_PK_SIZE,
     SEED_SIZE as P521_SEED,
+    P521PrivateKey, P521PublicKey,
 };
 use crate::sign::TypedScheme;
 
@@ -123,11 +128,75 @@ impl BlackChainPublicKey {
     /// Matches Go's `DeriveAddress` and `Wallet.DeriveAddress`.
     pub fn derive_address(&self) -> Address {
         let mut hasher = Keccak256::new();
-        hasher.update(&self.dilithium);
-        hasher.update(&self.p521);
-        hasher.update(&self.ed448);
+        Digest::update(&mut hasher, &self.dilithium);
+        Digest::update(&mut hasher, &self.p521);
+        Digest::update(&mut hasher, &self.ed448);
         let hash = hasher.finalize();
         Address::from_slice(&hash[12..32])
+    }
+
+    /// Verifies a composite post-quantum hybrid signature over any general message slice.
+    ///
+    /// Returns `Ok(true)` if all sub-signatures are valid and bound to the combined
+    /// entanglement hash of this public key.
+    ///
+    /// # Errors
+    /// Returns `Err` if any sub-signature verification fails or if the key format is invalid.
+    pub fn verify_message(&self, message: &[u8], signature: &[u8]) -> Result<bool, CryptoError> {
+        let hash = Keccak256::digest(message);
+
+        // ── Compute H_combined ──
+        let entg_nonce = [0u8; 16];
+        let mut shake = Shake256::default();
+        shake.update(self.dilithium_bytes());
+        shake.update(self.p521_bytes());
+        shake.update(self.ed448_bytes());
+        shake.update(&entg_nonce);
+        let mut h_combined = [0u8; 32];
+        shake.finalize_xof().read(&mut h_combined);
+
+        // ── Slicing ──
+        let dil_sig_len = crate::dilithium::SIGNATURE_SIZE;
+        let ed448_sig_len = 114;
+        if signature.len() < dil_sig_len + ed448_sig_len + 8 {
+            return Err(CryptoError::SignatureError(format!(
+                "composite signature too short: {} bytes",
+                signature.len()
+            )));
+        }
+
+        let dil_sig = &signature[..dil_sig_len];
+        let ed448_sig_offset = signature.len() - ed448_sig_len;
+        let p521_sig = &signature[dil_sig_len..ed448_sig_offset];
+        let ed448_sig = &signature[ed448_sig_offset..];
+
+        // ── Verify Dilithium5 ──
+        let dil_pk = DilPublicKey::from_bytes(self.dilithium_bytes()).map_err(|e| {
+            CryptoError::SignatureError(format!("Dilithium5 public key parse error: {e}"))
+        })?;
+        dil_pk
+            .verify_internal(&hash, dil_sig)
+            .map_err(|e| CryptoError::SignatureError(format!("Dilithium5 verification failed: {e}")))?;
+
+        // ── Verify P-521 ──
+        let p521_msg: Vec<u8> = [&hash[..], &h_combined, &[CURVE_ID_P521]].concat();
+        let p521_pk = P521PublicKey::from_bytes(self.p521_bytes()).map_err(|e| {
+            CryptoError::SignatureError(format!("P-521 public key parse error: {e}"))
+        })?;
+        p521_pk
+            .verify_sig(&p521_msg, p521_sig)
+            .map_err(|e| CryptoError::SignatureError(format!("P-521 verification failed: {e}")))?;
+
+        // ── Verify Ed448 ──
+        let ed448_msg: Vec<u8> = [&hash[..], &h_combined, &[CURVE_ID_ED448]].concat();
+        let ed448_pk = Ed448PublicKey::from_bytes(self.ed448_bytes()).map_err(|e| {
+            CryptoError::SignatureError(format!("Ed448 public key parse error: {e}"))
+        })?;
+        ed448_pk
+            .verify_sig(&ed448_msg, ed448_sig, None)
+            .map_err(|e| CryptoError::SignatureError(format!("Ed448 verification failed: {e}")))?;
+
+        Ok(true)
     }
 }
 
@@ -281,6 +350,57 @@ impl BlackChainPrivateKey {
             p521: p521_pk.as_bytes(),
             ed448: ed448_pk.as_bytes().to_vec(),
         })
+    }
+
+    /// Signs any general message byte slice using the composite post-quantum hybrid scheme.
+    ///
+    /// Under the hood, this uses a cross-algorithm entanglement hash (`h_combined`)
+    /// over a zeroed 16-byte nonce to bind the Dilithium5, NIST P-521, and Ed448
+    /// signatures together, guaranteeing message integrity and signature non-splicibility.
+    ///
+    /// # Errors
+    /// Propagates any signing or key parsing errors.
+    pub fn sign_message(&self, message: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        let hash = Keccak256::digest(message);
+        let pub_key = self.public_key();
+
+        // ── H_combined entanglement hash using a zeroed nonce for general messages ──
+        let entg_nonce = [0u8; 16];
+        let mut shake = Shake256::default();
+        shake.update(pub_key.dilithium_bytes());
+        shake.update(pub_key.p521_bytes());
+        shake.update(pub_key.ed448_bytes());
+        shake.update(&entg_nonce);
+        let mut h_combined = [0u8; 32];
+        shake.finalize_xof().read(&mut h_combined);
+
+        // ── Dilithium5 signature (raw hash) ──
+        let dil_sk_bytes = self.dilithium_bytes();
+        let mut dil_sk_buf = Zeroizing::new([0u8; crate::dilithium::PRIVATE_KEY_SIZE]);
+        dil_sk_buf.copy_from_slice(dil_sk_bytes);
+        let dil_inner = d5::SecretKey::from_bytes(&*dil_sk_buf).map_err(|e| {
+            CryptoError::SignatureError(format!("Dilithium5 key parse failed: {e:?}"))
+        })?;
+        let dil_sig = dil_inner.sign(&hash).to_vec();
+
+        // ── P-521 signature (H ‖ h_combined ‖ curve_id) ──
+        let p521_msg: Vec<u8> = [&hash[..], &h_combined, &[CURVE_ID_P521]].concat();
+        let p521_sk = P521PrivateKey::from_bytes(self.p521_bytes())?;
+        let p521_sig = p521_sk.sign_msg(&p521_msg);
+
+        // ── Ed448 signature (H ‖ h_combined ‖ curve_id) ──
+        let ed448_msg: Vec<u8> = [&hash[..], &h_combined, &[CURVE_ID_ED448]].concat();
+        let (_, ed448_sk) = crate::mdecc::ed448::PrivateKey::from_bytes(self.ed448_bytes())
+            .map_err(|e| CryptoError::SignatureError(e.to_string()))?;
+        let ed448_sig = ed448_sk.sign_msg(&ed448_msg, None)?;
+
+        // ── Assemble composite signature [dil ‖ p521 ‖ ed448] ──
+        let mut composite = Vec::with_capacity(dil_sig.len() + p521_sig.len() + ed448_sig.len());
+        composite.extend_from_slice(&dil_sig);
+        composite.extend_from_slice(&p521_sig);
+        composite.extend_from_slice(&ed448_sig);
+
+        Ok(composite)
     }
 }
 

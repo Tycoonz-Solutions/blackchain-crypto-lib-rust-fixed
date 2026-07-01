@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod api;
 pub mod crypto;
 pub mod dilithium;
 pub mod error;
@@ -8,6 +9,7 @@ pub mod mdecc;
 pub mod sign;
 pub mod transaction;
 
+pub use api::{create_wallet, sign_message, verify_message, sign_transaction, verify_transaction};
 pub use crypto::{BlackChainPrivateKey, BlackChainPublicKey, ALGO_ID, COMPOSITE_PK_SIZE, VERSION};
 pub use error::CryptoError;
 pub use hdwallet::bip39::{generate_mnemonic, seed_from_mnemonic, validate_mnemonic};

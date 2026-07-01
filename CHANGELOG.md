@@ -15,6 +15,9 @@ All notable changes to this project will be documented in this file. This projec
 - **CI/CD Pipeline**: Configured GitHub Actions workflow for linting, testing, and dependency vulnerability audits via Cargo Audit.
 - **Unsafe Code Ban**: Banned all unsafe blocks via root `#![forbid(unsafe_code)]` header.
 - **Testing Documentation**: Created `FUZZING.md` with guidelines on target invariants, execution commands, and troubleshooting guides.
+- **Developer API Wrapper Facade**: Introduced `src/api.rs` providing high-level helper functions for wallet creation, message signing/verification, and transaction signing/verification.
+- **Core Key Signature Encapsulation**: Refactored the core message signing and verification routines directly into `BlackChainPrivateKey` and `BlackChainPublicKey` inside `src/crypto.rs` to ensure modularity and clean separation of concerns.
+- **Visual Cryptographic Flows Documentation**: Created `docs/README.md` featuring Mermaid diagrams and mathematical step-by-step specifications for key generation and transaction verification pipelines.
 
 ### Fixed
 - **mdECC Entropy Floor**: Fixed a cryptographic weakness where SHAKE256 seed derivation truncated output to 8 bytes (64 bits of entropy). Extended it to 32 bytes (256 bits).

@@ -72,6 +72,9 @@ The composite public/private keys contain material from all three schemes, makin
 
 ## Cryptographic Specification & Protocols
 
+> [!TIP]
+> For a detailed visual guide and step-by-step breakdown of the cryptographic pipelines, refer to the [BlackChain Cryptographic Flows documentation](docs/README.md).
+
 ### 1. Root Seed Partitioning
 When deriving composite keys from a 64-byte BIP-39 root seed, the bytes are structured as follows:
 - `seed[0..32]` (32 B)  → Dilithium5 Master Seed.
