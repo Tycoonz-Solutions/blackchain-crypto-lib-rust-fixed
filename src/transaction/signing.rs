@@ -1,6 +1,6 @@
 // transaction/signing.rs — BlackChain transaction signing and sender recovery.
 //
-// ## Signing protocol (matches Go's hdwallet.Sign)
+// ## Signing protocol
 //
 // Given a 32-byte transaction hash `H`:
 //
@@ -14,7 +14,7 @@
 // The composite signature and the serialized composite public key are embedded
 // in the transaction's `pqc_signature` and `pub_key` fields respectively.
 //
-// ## Sender recovery (matches Go's BlackChainSignerV1.Sender)
+// ## Sender recovery
 //
 //  1. Deserialize pub_key → BlackChainPublicKey
 //  2. Reconstruct h_combined using the same algorithm as above
@@ -33,7 +33,7 @@ use crate::dilithium::{PublicKey as DilPublicKey, SIGNATURE_SIZE as DIL_SIG_SIZE
 use crate::error::CryptoError;
 use crate::hdwallet::derivation::{CURVE_ID_ED448, CURVE_ID_P521};
 use crate::mdecc::ed448::PublicKey as Ed448PublicKey;
-use crate::mdecc::p521::{P521PrivateKey, P521PublicKey, SIGNATURE_SIZE as P521_SIG_MAX};
+use crate::mdecc::p521::{P521PrivateKey, P521PublicKey, SIGNATURE_SIZE as P521_SIG_LEN};
 use crate::transaction::types::BlackChainTxType;
 
 // ---------------------------------------------------------------------------
@@ -42,12 +42,15 @@ use crate::transaction::types::BlackChainTxType;
 
 /// Size of a Dilithium5 signature (bytes).
 pub const DIL_SIG_BYTES: usize = DIL_SIG_SIZE;
-/// Maximum size of a DER-encoded P-521 ECDSA signature.
-pub const P521_SIG_BYTES: usize = P521_SIG_MAX;
+/// Size of a P-521 ECDSA signature (fixed-width `r ‖ s`).
+pub const P521_SIG_BYTES: usize = P521_SIG_LEN;
 /// Size of an Ed448 signature.
 pub const ED448_SIG_BYTES: usize = 114;
-/// Minimum composite signature size (Dilithium5 + minimum 8 bytes for P-521 + Ed448).
-pub const MIN_COMPOSITE_SIG_SIZE: usize = DIL_SIG_BYTES + 8 + ED448_SIG_BYTES;
+/// Exact composite signature size: `Dilithium5 ‖ P-521 ‖ Ed448`.
+///
+/// Every sub-signature is fixed-width, so a well-formed composite signature has
+/// exactly this length.
+pub const COMPOSITE_SIG_SIZE: usize = DIL_SIG_BYTES + P521_SIG_BYTES + ED448_SIG_BYTES;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -116,7 +119,7 @@ impl BlackChainTxType {
 
     /// Signs this transaction in-place using the BlackChain hybrid scheme.
     ///
-    /// Implements the full Go `hdwallet.Sign` protocol including the
+    /// Implements the full hybrid signing protocol including the
     /// H_combined cross-algorithm entanglement binding.
     ///
     /// On success, the `pqc_signature`, `pub_key`, and `v`/`r`/`s` fields
@@ -183,18 +186,15 @@ impl BlackChainTxType {
         Ok(())
     }
 
-    /// Recovers the sender's address by verifying the composite signature.
+    /// Recovers the sender's address by verifying the composite PQC signature.
     ///
-    /// Implements the Go `BlackChainSignerV1.Sender` protocol:
-    ///  1. Deserializes the `pub_key` field.
-    ///  2. Reconstructs `h_combined` using the embedded public keys.
-    ///  3. Verifies Dilithium5, P-521, and Ed448 signatures.
-    ///  4. Derives and returns the address from the verified public key.
+    /// Runs the composite sender-recovery protocol. Internally this
+    /// is a thin wrapper over `verify_signature`: it computes the RLP transaction
+    /// hash, then delegates all cryptographic reconstruction and verification there.
     ///
     /// # Errors
     /// Returns `Err` if any signature is missing, invalid, or fails verification.
     pub fn recover_sender(&self) -> Result<Address, CryptoError> {
-        // ── Require both signature fields ─────────────────────────────────
         let pqc_sig = self.pqc_signature.as_ref().ok_or_else(|| {
             CryptoError::SignatureError("transaction is not signed (pqc_signature missing)".into())
         })?;
@@ -202,66 +202,72 @@ impl BlackChainTxType {
             CryptoError::SignatureError("transaction is not signed (pub_key missing)".into())
         })?;
 
-        // ── Parse composite public key ────────────────────────────────────
-        let pub_key = BlackChainPublicKey::from_bytes(pub_key_bytes).map_err(|e| {
-            CryptoError::SignatureError(format!("pub_key deserialization failed: {e}"))
-        })?;
-
-        // ── Compute tx hash ───────────────────────────────────────────────
         let hash = self.signature_hash();
-
-        // ── Reconstruct H_combined ────────────────────────────────────────
-        let address = pub_key.derive_address();
-        let entg_nonce = compute_entanglement_nonce(self.chain_id, &address);
-        let h_combined = compute_h_combined(&pub_key, &entg_nonce);
-
-        // ── Parse composite signature: dil ‖ p521 ‖ ed448 ────────────────
-        // P-521 signatures are DER-encoded and variable-length. We locate the
-        // ed448 portion from the end (fixed 114 bytes) and treat everything
-        // between the Dilithium portion and the Ed448 portion as the P-521 sig.
-        if pqc_sig.len() < DIL_SIG_BYTES + ED448_SIG_BYTES {
-            return Err(CryptoError::SignatureError(format!(
-                "composite signature too short: {} bytes (minimum {})",
-                pqc_sig.len(),
-                MIN_COMPOSITE_SIG_SIZE
-            )));
-        }
-
-        let dil_sig = &pqc_sig[..DIL_SIG_BYTES];
-        let ed448_sig_offset = pqc_sig.len() - ED448_SIG_BYTES;
-        let p521_sig = &pqc_sig[DIL_SIG_BYTES..ed448_sig_offset];
-        let ed448_sig = &pqc_sig[ed448_sig_offset..];
-
-        // ── Verify Dilithium5 ─────────────────────────────────────────────
-        let dil_pk = DilPublicKey::from_bytes(pub_key.dilithium_bytes()).map_err(|e| {
-            CryptoError::SignatureError(format!("Dilithium5 public key parse error: {e}"))
-        })?;
-        dil_pk
-            .verify_internal(&hash, dil_sig)
-            .map_err(|e| CryptoError::SignatureError(format!("Dilithium5 verification failed: {e}")))?;
-
-        // ── Verify P-521 ──────────────────────────────────────────────────
-        let p521_msg: Vec<u8> = [hash.as_slice(), &h_combined, &[CURVE_ID_P521]].concat();
-        let p521_pk = P521PublicKey::from_bytes(pub_key.p521_bytes()).map_err(|e| {
-            CryptoError::SignatureError(format!("P-521 public key parse error: {e}"))
-        })?;
-        p521_pk
-            .verify_sig(&p521_msg, p521_sig)
-            .map_err(|e| CryptoError::SignatureError(format!("P-521 verification failed: {e}")))?;
-
-        // ── Verify Ed448 ──────────────────────────────────────────────────
-        let ed448_msg: Vec<u8> = [hash.as_slice(), &h_combined, &[CURVE_ID_ED448]].concat();
-        let ed448_pk = Ed448PublicKey::from_bytes(pub_key.ed448_bytes()).map_err(|e| {
-            CryptoError::SignatureError(format!("Ed448 public key parse error: {e}"))
-        })?;
-        ed448_pk
-            .verify_sig(&ed448_msg, ed448_sig, None)
-            .map_err(|e| CryptoError::SignatureError(format!("Ed448 verification failed: {e}")))?;
-
-        // ── Derive sender address from the verified public key ────────────
-        Ok(pub_key.derive_address())
+        verify_signature(&hash, self.chain_id, pub_key_bytes.as_ref(), pqc_sig.as_ref())
     }
 }
+
+/// Verifies a composite post-quantum hybrid signature of a transaction hash.
+///
+/// Returns the verified sender's Address on success.
+pub fn verify_signature(
+    tx_hash: &[u8; 32],
+    chain_id: u64,
+    pub_key_bytes: &[u8],
+    pqc_sig: &[u8],
+) -> Result<Address, CryptoError> {
+    // Parse composite public key
+    let pub_key = BlackChainPublicKey::from_bytes(pub_key_bytes)?;
+
+    // Compute H_combined
+    let address = pub_key.derive_address();
+    let entg_nonce = compute_entanglement_nonce(chain_id, &address);
+    let h_combined = compute_h_combined(&pub_key, &entg_nonce);
+
+    // Split composite signature: dil ‖ p521 ‖ ed448. All three sub-signatures are
+    // fixed-width, so the composite must have exactly the expected length — this
+    // rejects both truncated and padded signatures at fixed offsets.
+    if pqc_sig.len() != COMPOSITE_SIG_SIZE {
+        return Err(CryptoError::SignatureError(format!(
+            "composite signature has wrong length: {} bytes (expected {})",
+            pqc_sig.len(),
+            COMPOSITE_SIG_SIZE
+        )));
+    }
+
+    let dil_sig = &pqc_sig[..DIL_SIG_BYTES];
+    let p521_sig = &pqc_sig[DIL_SIG_BYTES..DIL_SIG_BYTES + P521_SIG_BYTES];
+    let ed448_sig = &pqc_sig[DIL_SIG_BYTES + P521_SIG_BYTES..];
+
+    // Verify Dilithium5
+    let dil_pk = DilPublicKey::from_bytes(pub_key.dilithium_bytes()).map_err(|e| {
+        CryptoError::SignatureError(format!("Dilithium5 public key parse error: {e}"))
+    })?;
+    dil_pk
+        .verify_internal(tx_hash, dil_sig)
+        .map_err(|e| CryptoError::SignatureError(format!("Dilithium5 verification failed: {e}")))?;
+
+    // Verify P-521
+    let p521_msg: Vec<u8> = [tx_hash.as_slice(), &h_combined, &[CURVE_ID_P521]].concat();
+    let p521_pk = P521PublicKey::from_bytes(pub_key.p521_bytes()).map_err(|e| {
+        CryptoError::SignatureError(format!("P-521 public key parse error: {e}"))
+    })?;
+    p521_pk
+        .verify_sig(&p521_msg, p521_sig)
+        .map_err(|e| CryptoError::SignatureError(format!("P-521 verification failed: {e}")))?;
+
+    // Verify Ed448
+    let ed448_msg: Vec<u8> = [tx_hash.as_slice(), &h_combined, &[CURVE_ID_ED448]].concat();
+    let ed448_pk = Ed448PublicKey::from_bytes(pub_key.ed448_bytes()).map_err(|e| {
+        CryptoError::SignatureError(format!("Ed448 public key parse error: {e}"))
+    })?;
+    ed448_pk
+        .verify_sig(&ed448_msg, ed448_sig, None)
+        .map_err(|e| CryptoError::SignatureError(format!("Ed448 verification failed: {e}")))?;
+
+    Ok(address)
+}
+
 
 #[cfg(test)]
 mod tests {

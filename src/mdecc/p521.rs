@@ -7,8 +7,8 @@
 // Key facts:
 //   - NIST P-521 field elements are 66 bytes (ceil(521/8)).
 //   - Uncompressed SEC1 public keys are 133 bytes (0x04 || x || y).
-//   - DER-encoded ECDSA signatures are variable-length; maximum for P-521 is
-//     139 bytes (tag + length + r + s, each ≤ 66 bytes + overhead).
+//   - ECDSA signatures are fixed-width `r ‖ s` (66 bytes each = 132 bytes total),
+//     normalized to low-S canonical form to prevent signature malleability.
 //   - Signatures use randomized ECDSA nonces (OS CSPRNG), so signing the same
 //     (key, message) pair multiple times will yield different signatures.
 
@@ -32,8 +32,8 @@ use crate::sign::{
 pub const PRIVATE_KEY_SIZE: usize = 66;
 /// Number of bytes in an uncompressed SEC1 P-521 public key (0x04 || x || y).
 pub const PUBLIC_KEY_SIZE: usize = 133;
-/// Maximum number of bytes in a DER-encoded P-521 ECDSA signature.
-pub const SIGNATURE_SIZE: usize = 139;
+/// Number of bytes in a fixed-width P-521 ECDSA signature (`r ‖ s`, 66 bytes each).
+pub const SIGNATURE_SIZE: usize = 132;
 /// Seed size for deterministic key derivation (same as private key scalar).
 pub const SEED_SIZE: usize = PRIVATE_KEY_SIZE;
 
@@ -56,10 +56,20 @@ impl P521PublicKey {
             .map_err(|e| CryptoError::CurveError(e.to_string()))
     }
 
-    /// Verify a DER-encoded ECDSA signature against `msg`.
+    /// Verify a fixed-width ECDSA signature against `msg`.
+    ///
+    /// Rejects non-canonical high-S signatures so that a third party cannot
+    /// transform a valid signature `(r, s)` into a second valid signature
+    /// `(r, n - s)` (ECDSA signature malleability).
     pub fn verify_sig(&self, msg: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
         let sig = p521::ecdsa::Signature::from_slice(signature)
             .map_err(|e| CryptoError::SignatureError(e.to_string()))?;
+        // `normalize_s` returns `Some` only when the signature was high-S.
+        if sig.normalize_s().is_some() {
+            return Err(CryptoError::SignatureError(
+                "non-canonical high-S P-521 signature rejected".into(),
+            ));
+        }
         self.0
             .verify(msg, &sig)
             .map_err(|e| CryptoError::SignatureError(e.to_string()))
@@ -167,14 +177,18 @@ impl P521PrivateKey {
         P521PublicKey(VerifyingKey::from(&self.0))
     }
 
-    /// Sign `msg` and return a DER-encoded signature.
+    /// Sign `msg` and return a fixed-width (132-byte) signature.
     ///
     /// Uses the OS CSPRNG for nonce randomization (RFC 6979 is not used).
     /// Two calls with the same key and message will produce different but
     /// both-valid signatures. This provides additional hedging against
-    /// nonce-reuse attacks.
+    /// nonce-reuse attacks. The signature is normalized to low-S canonical
+    /// form so it cannot be malleated after the fact.
     pub fn sign_msg(&self, msg: &[u8]) -> Vec<u8> {
         let sig: p521::ecdsa::Signature = self.0.sign(msg);
+        // Enforce low-S canonical form (non-malleable); `normalize_s` is a no-op
+        // when the signature is already low-S.
+        let sig = sig.normalize_s().unwrap_or(sig);
         sig.to_bytes().to_vec()
     }
 }
@@ -541,7 +555,7 @@ mod tests {
         );
     }
 
-    /// `Scheme::derive_key` panics on a short seed (mirrors Go contract).
+    /// `Scheme::derive_key` panics on a short seed.
     #[test]
     #[should_panic]
     fn derive_key_panics_on_short_seed() {
@@ -585,6 +599,23 @@ mod tests {
             sig1, sig2,
             "randomized ECDSA must produce distinct signatures"
         );
+    }
+
+    /// Every signature we emit must be in low-S canonical form, so a third party
+    /// cannot produce a second valid `(r, n - s)` encoding (ECDSA malleability).
+    #[test]
+    fn signatures_are_low_s_canonical() {
+        use p521::ecdsa::Signature;
+        let (_, sk) = generate_key().expect("keygen");
+        for _ in 0..16 {
+            let sig_bytes = sk.sign_msg(b"low-s canonical probe");
+            assert_eq!(sig_bytes.len(), SIGNATURE_SIZE, "signature must be fixed-width");
+            let sig = Signature::from_slice(&sig_bytes).expect("valid signature bytes");
+            assert!(
+                sig.normalize_s().is_none(),
+                "sign_msg must always emit low-S canonical form"
+            );
+        }
     }
 
     /// Verifying against the wrong message must fail.

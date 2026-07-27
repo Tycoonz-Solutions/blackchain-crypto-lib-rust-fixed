@@ -1,16 +1,8 @@
 // api.rs — High-level developer API wrapper for the BlackChain cryptographic suite.
 //
-// NOTE ON THIS TEST SUITE:
-// Only `api.rs` was provided, not the full crate (`crypto.rs`,
-// `transaction/types.rs`, `hdwallet/*`, `error.rs`). The tests below are
-// written strictly against the public surface shown in this file:
+// Public surface:
 //   create_wallet, sign_message, verify_message,
 //   sign_transaction, verify_transaction
-//
-// The `BlackChainTxType` construction in the transaction-related tests is a
-// best-effort placeholder (marked with `TODO(adjust-to-real-type)`) — swap
-// in your real constructor / field names. Everything else compiles against
-// exactly what's defined here.
 
 use crate::crypto::{BlackChainPrivateKey, BlackChainPublicKey};
 use crate::error::CryptoError;
@@ -201,15 +193,18 @@ mod tests {
     }
 
     #[test]
-    // fn test_verify_message_wrong_key_fails() {
-    //     let (_, key_a) = create_wallet("").unwrap();
-    //     let (_, key_b) = create_wallet("").unwrap();
-    //     let message = b"cross-key verification must fail";
+    fn test_verify_message_wrong_key_fails() {
+        let (_, key_a) = create_wallet("").unwrap();
+        let (_, key_b) = create_wallet("").unwrap();
+        let message = b"cross-key verification must fail";
+        let signature = sign_message(message, &key_a).unwrap();
+        let result = verify_message(message, &signature, key_b.public_key());
+        // `verify_message` returns `Err` on any failed sub-verification and only
+        // ever returns `Ok(true)` on success, so a wrong key must not yield
+        // `Ok(true)`. (`CryptoError` is not `PartialEq`, hence `matches!`.)
+        assert!(matches!(result, Err(_) | Ok(false)));
+    }
 
-    //     let signature = sign_message(message, &key_a).unwrap();
-    //     let result = verify_message(message, &signature, key_b.public_key());
-    //     assert!(result.is_err() || result == Ok(false));
-    // }
     #[test]
     fn test_verify_message_truncated_signature_fails() {
         let (_, key) = create_wallet("").unwrap();
@@ -279,79 +274,76 @@ mod tests {
         }
     }
 
-    // // ---------------------------------------------------------------
-    // // sign_transaction / verify_transaction
-    // //
-    // // TODO(adjust-to-real-type): `BlackChainTxType` fields/constructor are
-    // // not visible in api.rs. Replace `build_test_tx(...)` below with the
-    // // real constructor for your transaction type before enabling these
-    // // tests (currently marked `#[ignore]` so the suite compiles/runs
-    // // without guessing at private internals).
-    // // ---------------------------------------------------------------
+    // ---------------------------------------------------------------
+    // sign_transaction / verify_transaction
+    // ---------------------------------------------------------------
 
-    // #[cfg(feature = "tx-tests")]
-    // mod transaction_tests {
-    //     use super::*;
+    mod transaction_tests {
+        use super::*;
+        use alloy_primitives::{Bytes, U256};
 
-    //     // Placeholder builder — replace with actual BlackChainTxType API.
-    //     fn build_test_tx(nonce: u64, value: u128) -> BlackChainTxType {
-    //         todo!("wire up to the real BlackChainTxType constructor, nonce={nonce}, value={value}")
-    //     }
+        fn build_test_tx(nonce: u64, value: u128) -> BlackChainTxType {
+            BlackChainTxType {
+                chain_id: 1,
+                nonce,
+                max_priority_fee_per_gas: U256::from(1_500_000_000u64),
+                max_fee_per_gas: U256::from(30_000_000_000u64),
+                gas_limit: 21_000,
+                to: Some(Address::repeat_byte(0xaa)),
+                value: U256::from(value),
+                data: Bytes::from(vec![1, 2, 3, 4]),
+                v: None,
+                r: None,
+                s: None,
+                pqc_signature: None,
+                pub_key: None,
+            }
+        }
 
-    //     #[test]
-    //     #[ignore = "enable once build_test_tx is wired to the real type"]
-    //     fn test_sign_and_verify_transaction_roundtrip() {
-    //         let (_, key) = create_wallet("").unwrap();
-    //         let mut tx = build_test_tx(0, 1_000_000_000_000_000_000);
+        #[test]
+        fn test_sign_and_verify_transaction_roundtrip() {
+            let (_, key) = create_wallet("").unwrap();
+            let mut tx = build_test_tx(0, 1_000_000_000_000_000_000);
 
-    //         sign_transaction(&mut tx, &key).unwrap();
-    //         let recovered = verify_transaction(&tx).unwrap();
+            sign_transaction(&mut tx, &key).unwrap();
+            let recovered = verify_transaction(&tx).unwrap();
 
-    //         // The recovered address should match the address derivable from `key`.
-    //         // Replace `key.address()` with however BlackChainPrivateKey exposes it.
-    //         // assert_eq!(recovered, key.address());
-    //         let _ = recovered;
-    //     }
+            // The recovered address must match the address derived from `key`.
+            assert_eq!(recovered, key.public_key().derive_address());
+        }
 
-    //     #[test]
-    //     #[ignore = "enable once build_test_tx is wired to the real type"]
-    //     fn test_verify_unsigned_transaction_fails() {
-    //         let tx = build_test_tx(0, 0);
-    //         assert!(verify_transaction(&tx).is_err());
-    //     }
+        #[test]
+        fn test_verify_unsigned_transaction_fails() {
+            let tx = build_test_tx(0, 0);
+            assert!(verify_transaction(&tx).is_err());
+        }
 
-    //     #[test]
-    //     #[ignore = "enable once build_test_tx is wired to the real type"]
-    //     fn test_verify_tampered_transaction_fails() {
-    //         let (_, key) = create_wallet("").unwrap();
-    //         let mut tx = build_test_tx(1, 500);
-    //         sign_transaction(&mut tx, &key).unwrap();
+        #[test]
+        fn test_verify_tampered_transaction_fails() {
+            let (_, key) = create_wallet("").unwrap();
+            let signer = key.public_key().derive_address();
+            let mut tx = build_test_tx(1, 500);
+            sign_transaction(&mut tx, &key).unwrap();
 
-    //         // Tamper with the tx after signing (e.g. bump nonce/value) and
-    //         // confirm the signature no longer recovers the original sender
-    //         // or verification errors outright.
-    //         // tx.value = 999_999;
-    //         let result = verify_transaction(&tx);
-    //         assert!(result.is_err() || result.unwrap() != key_address_placeholder());
-    //     }
+            // Tamper with the value after signing: recovery must fail (the tx
+            // hash no longer matches) or not recover the original signer.
+            tx.value = U256::from(999_999u64);
+            let result = verify_transaction(&tx);
+            assert!(result.is_err() || result.unwrap() != signer);
+        }
 
-    //     fn key_address_placeholder() -> Address {
-    //         Address::ZERO
-    //     }
+        #[test]
+        fn test_sign_transaction_recovers_same_sender_when_resigned() {
+            let (_, key) = create_wallet("").unwrap();
+            let mut tx = build_test_tx(2, 1);
+            sign_transaction(&mut tx, &key).unwrap();
+            let addr1 = verify_transaction(&tx).unwrap();
 
-    //     #[test]
-    //     #[ignore = "enable once build_test_tx is wired to the real type"]
-    //     fn test_sign_transaction_is_idempotent_on_valid_output() {
-    //         let (_, key) = create_wallet("").unwrap();
-    //         let mut tx = build_test_tx(2, 1);
-    //         sign_transaction(&mut tx, &key).unwrap();
-    //         let addr1 = verify_transaction(&tx).unwrap();
-
-    //         // Re-signing (e.g. re-broadcast flow) should still recover the
-    //         // same sender address deterministically.
-    //         sign_transaction(&mut tx, &key).unwrap();
-    //         let addr2 = verify_transaction(&tx).unwrap();
-    //         assert_eq!(addr1, addr2);
-    //     }
-    // }
+            // Re-signing (e.g. a re-broadcast flow) must still recover the same
+            // sender address.
+            sign_transaction(&mut tx, &key).unwrap();
+            let addr2 = verify_transaction(&tx).unwrap();
+            assert_eq!(addr1, addr2);
+        }
+    }
 }

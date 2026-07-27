@@ -6,7 +6,6 @@
 use crystals_dilithium::dilithium5 as d5;
 use std::fmt;
 use subtle::ConstantTimeEq;
-use zeroize::Zeroize;
 
 use crate::error::CryptoError;
 use crate::sign::{
@@ -174,23 +173,13 @@ impl SignPublicKey for PublicKey {
 // PrivateKey
 // ---------------------------------------------------------------------------
 
+/// Newtype wrapper around the Dilithium secret key.
+///
+/// `crystals_dilithium`'s `SecretKey` derives `ZeroizeOnDrop`, so the key
+/// material is scrubbed from memory automatically when this value (and hence the
+/// inner key) is dropped. The wrapper exists solely to provide a redacted
+/// `Debug` impl so secret bytes can never be accidentally printed.
 pub struct ZeroizingSecretKey(d5::SecretKey);
-
-impl Zeroize for ZeroizingSecretKey {
-    fn zeroize(&mut self) {
-        let mut raw = self.0.to_bytes();
-        raw.zeroize();
-        if let Ok(zeroed) = d5::SecretKey::from_bytes(&raw) {
-            self.0 = zeroed;
-        }
-    }
-}
-
-impl Drop for ZeroizingSecretKey {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
 
 #[derive(Debug)]
 pub struct PrivateKey {
@@ -612,6 +601,28 @@ mod tests {
             "deterministic keygen must produce identical secret keys");
     }
 
+    /// Deterministic keygen regression lock for the Dilithium5 primitive: pins
+    /// seed → public key so a dependency bump that alters the algorithm is caught.
+    ///
+    /// NOTE: `crystals_dilithium::dilithium5` is round-3 Dilithium, NOT FIPS 204
+    /// ML-DSA — the crate's ACVP/FIPS-204 vectors apply only to its `ml_dsa_*`
+    /// modules, so this is a behavior lock rather than a FIPS-204 conformance KAT.
+    #[test]
+    fn dilithium5_keygen_regression_lock() {
+        let seed = [0x42u8; SEED_SIZE];
+        let (pk, _sk) = new_key_from_seed(&seed);
+        let mut buf = [0u8; PUBLIC_KEY_SIZE];
+        pk.pack(&mut buf);
+        assert_eq!(buf.len(), PUBLIC_KEY_SIZE);
+        println!("DIL5PK16={}", hex::encode(&buf[..16]));
+        const EXPECTED_HEAD: &str = "ab8096d1d35353571fefcf2d3d9d1636";
+        assert_eq!(
+            hex::encode(&buf[..16]),
+            EXPECTED_HEAD,
+            "Dilithium5 seed→public-key derivation changed"
+        );
+    }
+
     /// Two distinct seeds must produce distinct keys.
     #[test]
     fn derive_key_differs_for_different_seeds() {
@@ -623,7 +634,7 @@ mod tests {
             "different seeds must yield different public keys");
     }
 
-    /// `Scheme::derive_key` panics on a wrong-size seed (mirrors Go's panic).
+    /// `Scheme::derive_key` panics on a wrong-size seed.
     #[test]
     #[should_panic]
     fn derive_key_panics_on_wrong_seed_size() {

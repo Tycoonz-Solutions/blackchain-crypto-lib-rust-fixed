@@ -217,16 +217,14 @@ impl PublicKey {
             CryptoError::SignatureError("signature R decompression failed".into())
         })?;
 
-        // Decode scalar S (little-endian, must be < group order).
-        // S is encoded in 57 bytes, but since L has 446 bits, the 57th byte must be 0.
-        if s_bytes[56] != 0 {
-            return Err(CryptoError::SignatureError(
-                "S scalar highest byte is non-zero".into(),
-            ));
-        }
-        let mut s_bytes_56 = [0u8; 56];
-        s_bytes_56.copy_from_slice(&s_bytes[..56]);
-        let s_scalar = Scalar::from_bytes(s_bytes_56);
+        // Decode scalar S, rejecting non-canonical encodings. `from_canonical_bytes`
+        // enforces both the high-bit constraint (byte 56 == 0, top two bits of
+        // byte 55 clear) and full reduction (S < group order L). This prevents
+        // signature malleability via S' = S + L, which a raw `Scalar::from_bytes`
+        // load would silently accept.
+        let s_scalar = Scalar::from_canonical_bytes(s_bytes).ok_or_else(|| {
+            CryptoError::SignatureError("non-canonical Ed448 S scalar (S >= L)".into())
+        })?;
 
         // Build the SHAKE-256 challenge hash per RFC 8032 §5.2.7:
         // dom4(x, y) || R || A || msg  where dom4 encodes phflag and context.
@@ -647,6 +645,45 @@ mod tests {
         let sig = sk.sign_msg(b"hello", None).unwrap();
         assert_eq!(sig.len(), SIGNATURE_SIZE);
         assert!(pk.verify_sig(b"hello", &sig, None).is_ok());
+    }
+
+    /// Known-Answer Test against RFC 8032 §7.4 (Ed448, the "-----Blank" vector:
+    /// empty message, no context). This is an *authoritative* conformance check,
+    /// not a self-consistency check. It exercises three independent guarantees:
+    ///   1. public-key derivation from the 57-byte secret matches the RFC,
+    ///   2. our deterministic signing reproduces the RFC signature byte-for-byte,
+    ///   3. the hand-rolled goldilocks verification path (`from_bytes` →
+    ///      `verify_via_goldilocks`) accepts the RFC signature.
+    #[test]
+    fn rfc8032_ed448_blank_kat() {
+        // RFC 8032, Section 7.4, first Ed448 test vector.
+        const SECRET: &str = "6c82a562cb808d10d632be89c8513ebf6c929f34ddfa8c9f63c9960ef6e348a3528c8a3fcc2f044e39a3fc5b94492f8f032e7549a20098f95b";
+        const PUBLIC: &str = "5fd7449b59b461fd2ce787ec616ad46a1da1342485a70e1f8a0ea75d80e96778edf124769b46c7061bd6783df1e50f6cd1fa1abeafe8256180";
+        const SIGNATURE: &str = "533a37f6bbe457251f023c0d88f976ae2dfb504a843e34d2074fd823d41a591f2b233f034f628281f2fd7a22ddd47d7828c59bd0a21bfd3980ff0d2028d4b18a9df63e006c5d1c2d345b925d8dc00b4104852db99ac5c7cdda8530a113a0f4dbb61149f05a7363268c71d95808ff2e652600";
+
+        let sk = hex::decode(SECRET).unwrap();
+        let pk_expected = hex::decode(PUBLIC).unwrap();
+        let sig_expected = hex::decode(SIGNATURE).unwrap();
+        let msg: &[u8] = b""; // empty message
+
+        // (1) Public-key derivation matches RFC 8032.
+        let (_, priv_key) = PrivateKey::from_bytes(&sk).expect("valid 57-byte secret");
+        assert_eq!(
+            priv_key.public_key().as_bytes().to_vec(),
+            pk_expected,
+            "Ed448 public-key derivation must match RFC 8032"
+        );
+
+        // (2) Deterministic signing reproduces the RFC signature exactly.
+        let sig = priv_key.sign_msg(msg, None).unwrap();
+        assert_eq!(sig, sig_expected, "Ed448 signature must match RFC 8032 byte-for-byte");
+
+        // (3) The goldilocks verification path accepts the authoritative signature.
+        let pk_deser = PublicKey::from_bytes(&pk_expected).expect("valid public key");
+        assert!(pk_deser.trusted_inner.is_none(), "deserialized key must use goldilocks path");
+        pk_deser
+            .verify_sig(msg, &sig_expected, None)
+            .expect("goldilocks verification must accept the RFC 8032 signature");
     }
 
     // THE critical regression test.

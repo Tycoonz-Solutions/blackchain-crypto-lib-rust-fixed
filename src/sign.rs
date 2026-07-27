@@ -1,63 +1,48 @@
-// sign — Rust equivalent of the Go `sign` package.
+// sign — signature-scheme trait infrastructure shared by every backend.
 //
-// Mirrors the interface structure exactly:
-//   - `SignatureOpts`  ↔  Go `SignatureOpts`
-//   - `PublicKey`      ↔  Go `PublicKey` interface
-//   - `PrivateKey`     ↔  Go `PrivateKey` interface
-//   - `Scheme`         ↔  Go `Scheme` interface
-//   - sentinel errors  ↔  Go `ErrTypeMismatch`, `ErrSeedSize`, etc.
+// Core traits:
+//   - `SignatureOpts`  — options forwarded to signing / verification
+//   - `PublicKey`      — verifies signatures
+//   - `PrivateKey`     — creates signatures
+//   - `Scheme`         — an object-safe signature scheme
+//   - sentinel error strings for type / size / context mismatches
 
 use std::fmt;
 
 use crate::error::CryptoError;
 
 // ---------------------------------------------------------------------------
-// SignatureOpts  (mirrors Go `SignatureOpts`)
+// SignatureOpts
 // ---------------------------------------------------------------------------
 
 /// Options forwarded to signing and verification.
-///
-/// Equivalent to Go's `sign.SignatureOpts`.
 #[derive(Debug, Clone, Default)]
 pub struct SignatureOpts {
     /// If non-empty, includes the given context in the signature if the scheme
-    /// supports it, and causes an error / panic otherwise — matching Go's
-    /// documented behaviour.
+    /// supports it, and causes an error / panic otherwise.
     pub context: String,
 }
 
 // ---------------------------------------------------------------------------
-// Sentinel errors  (mirrors Go's package-level `var Err*` values)
+// Sentinel errors
 // ---------------------------------------------------------------------------
 
 /// Types of private and public keys don't match.
-///
-/// Equivalent to Go's `sign.ErrTypeMismatch`.
 pub const ERR_TYPE_MISMATCH: &str = "types mismatch";
 
 /// The provided seed is of the wrong size.
-///
-/// Equivalent to Go's `sign.ErrSeedSize`.
 pub const ERR_SEED_SIZE: &str = "wrong seed size";
 
 /// The provided public key is of the wrong size.
-///
-/// Equivalent to Go's `sign.ErrPubKeySize`.
 pub const ERR_PUB_KEY_SIZE: &str = "wrong size for public key";
 
 /// The provided private key is of the wrong size.
-///
-/// Equivalent to Go's `sign.ErrPrivKeySize`.
 pub const ERR_PRIV_KEY_SIZE: &str = "wrong size for private key";
 
 /// A context string was provided but is not supported by the scheme.
-///
-/// Equivalent to Go's `sign.ErrContextNotSupported`.
 pub const ERR_CONTEXT_NOT_SUPPORTED: &str = "context not supported";
 
 /// The context string exceeds the maximum allowed length.
-///
-/// Equivalent to Go's `sign.ErrContextTooLong`.
 pub const ERR_CONTEXT_TOO_LONG: &str = "context string too long";
 
 // ---------------------------------------------------------------------------
@@ -97,13 +82,8 @@ pub(crate) fn err_context_too_long() -> CryptoError {
 }
 
 // ---------------------------------------------------------------------------
-// PublicKey trait  (mirrors Go `PublicKey` interface)
+// PublicKey trait
 //
-// Go interface:
-//   Scheme() Scheme
-//   Equal(crypto.PublicKey) bool
-//   encoding.BinaryMarshaler   → MarshalBinary() ([]byte, error)
-//   crypto.PublicKey           → marker
 // ---------------------------------------------------------------------------
 
 /// A public key used to verify signatures produced by the corresponding
@@ -113,97 +93,63 @@ pub(crate) fn err_context_too_long() -> CryptoError {
 /// and [`PartialEq`].
 pub trait PublicKey: Send + Sync + fmt::Debug {
     /// Returns the [`Scheme`] that created this key.
-    ///
-    /// Equivalent to Go's `PublicKey.Scheme()`.
     fn scheme(&self) -> &dyn Scheme;
 
     /// Returns `true` if `other` represents the same public key.
-    ///
-    /// Equivalent to Go's `PublicKey.Equal(crypto.PublicKey)`.
     fn equal(&self, other: &dyn PublicKey) -> bool;
 
     /// Serialises the public key to bytes.
-    ///
-    /// Equivalent to Go's `encoding.BinaryMarshaler.MarshalBinary()`.
     fn marshal_binary(&self) -> Result<Vec<u8>, CryptoError>;
 }
 
 // ---------------------------------------------------------------------------
-// PrivateKey trait  (mirrors Go `PrivateKey` interface)
+// PrivateKey trait
 //
-// Go interface:
-//   Scheme() Scheme
-//   Equal(crypto.PrivateKey) bool
-//   crypto.Signer             → Sign(rand, digest, opts) ([]byte, error)
-//                                Public() crypto.PublicKey
-//   crypto.PrivateKey         → marker
-//   encoding.BinaryMarshaler  → MarshalBinary() ([]byte, error)
 // ---------------------------------------------------------------------------
 
 /// A private key used to create signatures.
 ///
-/// Rust cannot directly mirror Go's `crypto.Signer` (which uses an `io.Reader`
-/// for randomness), so signing is split into:
+/// Because signing does not thread an `io.Reader` for randomness, it is
+/// split into:
 ///  - `sign_message` — the main signing path, taking [`SignatureOpts`].
 ///  - `public_key_bytes` — returns the raw bytes of the corresponding public key
 ///    without requiring a concrete associated type, enabling `dyn PrivateKey`.
 pub trait PrivateKey: Send + Sync + fmt::Debug {
     /// Returns the [`Scheme`] that created this key.
-    ///
-    /// Equivalent to Go's `PrivateKey.Scheme()`.
     fn scheme(&self) -> &dyn Scheme;
 
     /// Returns `true` if `other` represents the same private key.
     ///
-    /// Equivalent to Go's `PrivateKey.Equal(crypto.PrivateKey)`.
     /// Implementations MUST use constant-time comparison.
     fn equal(&self, other: &dyn PrivateKey) -> bool;
 
     /// Serialises the private key to bytes.
-    ///
-    /// Equivalent to Go's `encoding.BinaryMarshaler.MarshalBinary()`.
     fn marshal_binary(&self) -> Result<Vec<u8>, CryptoError>;
 
     /// Returns the corresponding public key as raw bytes.
     ///
-    /// Equivalent to Go's `crypto.Signer.Public()`, without the concrete-type
-    /// constraint so this trait remains object-safe.
+    /// Avoids a concrete-type constraint so this trait remains object-safe.
     fn public_key_bytes(&self) -> Vec<u8>;
 }
 
 // ---------------------------------------------------------------------------
-// Scheme trait  (mirrors Go `Scheme` interface exactly, method-for-method)
+// Scheme trait
 //
-// Go methods:
-//   Name() string
-//   GenerateKey() (PublicKey, PrivateKey, error)
-//   Sign(sk, message, opts) []byte          — panics on bad key / context
-//   Verify(pk, message, signature, opts) bool — panics on bad key / context
-//   DeriveKey(seed) (PublicKey, PrivateKey)  — panics on wrong seed size
-//   UnmarshalBinaryPublicKey([]byte) (PublicKey, error)
-//   UnmarshalBinaryPrivateKey([]byte) (PrivateKey, error)
-//   PublicKeySize() int
-//   PrivateKeySize() int
-//   SignatureSize() int
-//   SeedSize() int
-//   SupportsContext() bool
 //
 // Rust notes:
-//   - `Sign`   returns `Vec<u8>`; panics on bad key/context (matching Go).
-//   - `Verify` returns `bool`;    panics on bad key/context (matching Go).
-//   - `DeriveKey` panics on wrong seed size (matching Go).
+//   - `Sign`   returns `Vec<u8>`; panics on bad key/context.
+//   - `Verify` returns `bool`;    panics on bad key/context.
+//   - `DeriveKey` panics on wrong seed size.
 //   - The trait is object-safe: `GenerateKey`, `UnmarshalBinary*` return
 //     `Box<dyn PublicKey>` / `Box<dyn PrivateKey>` instead of concrete types.
 // ---------------------------------------------------------------------------
 
 /// A specific instance of a signature scheme.
 ///
-/// Mirrors Go's `sign.Scheme` interface method-for-method.
-///
 /// > [!WARNING]
 /// > **Safety Warning**: Methods on this trait (`sign`, `verify`, `derive_key`) can **panic**
-/// > on invalid input, incorrect key types, or unsupported context strings, matching the
-/// > Go reference library's panic-on-error contract. This trait is **not safe** for direct
+/// > on invalid input, incorrect key types, or unsupported context strings. This
+/// > trait is **not safe** for direct
 /// > use with untrusted input where panics must be avoided.
 /// >
 /// > For production transaction signing and verification, use the statically-typed,
@@ -211,8 +157,6 @@ pub trait PrivateKey: Send + Sync + fmt::Debug {
 /// > and [`crate::transaction::types::BlackChainTxType::recover_sender`].
 pub trait Scheme: Send + Sync {
     /// Name of the scheme, e.g. `"Ed448"` or `"Dilithium5"`.
-    ///
-    /// Equivalent to Go's `Scheme.Name()`.
     fn name(&self) -> &'static str;
 
     // -----------------------------------------------------------------------
@@ -220,23 +164,17 @@ pub trait Scheme: Send + Sync {
     // -----------------------------------------------------------------------
 
     /// Generates a fresh key pair using the system CSPRNG.
-    ///
-    /// Equivalent to Go's `Scheme.GenerateKey()`.
     #[allow(clippy::type_complexity)]
     fn generate_key(&self) -> Result<(Box<dyn PublicKey>, Box<dyn PrivateKey>), CryptoError>;
 
     /// Deterministically derives a key pair from `seed`.
     ///
     /// # Panics
-    /// Panics if `seed.len() != self.seed_size()` — matching Go's
-    /// `panic(sign.ErrSeedSize)`.
-    ///
-    /// Equivalent to Go's `Scheme.DeriveKey(seed)`.
+    /// Panics if `seed.len() != self.seed_size()`.
     fn derive_key(&self, seed: &[u8]) -> (Box<dyn PublicKey>, Box<dyn PrivateKey>);
 
     // -----------------------------------------------------------------------
-    // Sign / Verify  — panic on bad key type or unsupported context,
-    //                  exactly as documented in Go.
+    // Sign / Verify  — panic on bad key type or unsupported context.
     // -----------------------------------------------------------------------
 
     /// Signs `message` with `sk` and returns the detached signature.
@@ -245,8 +183,6 @@ pub trait Scheme: Send + Sync {
     /// - If `sk` is the wrong key type (`ErrTypeMismatch`).
     /// - If `opts.context` is non-empty and the scheme does not support
     ///   contexts (`ErrContextNotSupported`).
-    ///
-    /// Equivalent to Go's `Scheme.Sign(sk, message, opts) []byte`.
     fn sign(&self, sk: &dyn PrivateKey, message: &[u8], opts: Option<&SignatureOpts>) -> Vec<u8>;
 
     /// Returns `true` iff `signature` is a valid signature of `message` under
@@ -256,8 +192,6 @@ pub trait Scheme: Send + Sync {
     /// - If `pk` is the wrong key type (`ErrTypeMismatch`).
     /// - If `opts.context` is non-empty and the scheme does not support
     ///   contexts (`ErrContextNotSupported`).
-    ///
-    /// Equivalent to Go's `Scheme.Verify(pk, message, signature, opts) bool`.
     fn verify(
         &self,
         pk: &dyn PublicKey,
@@ -273,19 +207,15 @@ pub trait Scheme: Send + Sync {
     /// Deserialises a public key from `buf`.
     ///
     /// Returns `Err` if the buffer length or content is invalid.
-    ///
-    /// Equivalent to Go's `Scheme.UnmarshalBinaryPublicKey([]byte)`.
     fn unmarshal_binary_public_key(&self, buf: &[u8]) -> Result<Box<dyn PublicKey>, CryptoError>;
 
     /// Deserialises a private key from `buf`.
     ///
     /// Returns `Err` if the buffer length or content is invalid.
-    ///
-    /// Equivalent to Go's `Scheme.UnmarshalBinaryPrivateKey([]byte)`.
     fn unmarshal_binary_private_key(&self, buf: &[u8]) -> Result<Box<dyn PrivateKey>, CryptoError>;
 
     // -----------------------------------------------------------------------
-    // Size accessors  (all mirror Go's `PublicKeySize`, `PrivateKeySize`, etc.)
+    // Size accessors
     // -----------------------------------------------------------------------
 
     /// Size in bytes of a marshalled public key.
@@ -301,8 +231,6 @@ pub trait Scheme: Send + Sync {
     fn seed_size(&self) -> usize;
 
     /// Whether this scheme supports context strings in [`SignatureOpts`].
-    ///
-    /// Equivalent to Go's `Scheme.SupportsContext()`.
     fn supports_context(&self) -> bool;
 
     /// Whether this scheme supports private key deserialisation from bytes.
@@ -341,7 +269,7 @@ pub trait TypedScheme {
     /// Typed deterministic key derivation.
     ///
     /// # Panics
-    /// Panics if `seed.len()` is wrong — matches Go.
+    /// Panics if `seed.len()` is wrong.
     fn derive_key_typed(&self, seed: &[u8]) -> (Self::Pub, Self::Priv);
 
     /// Typed signing — returns `Vec<u8>` signature.

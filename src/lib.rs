@@ -18,4 +18,6 @@ pub use hdwallet::derivation::{
 };
 pub use sign::{PrivateKey, PublicKey, Scheme};
 pub use transaction::types::BlackChainTxType;
+pub use transaction::signing::verify_signature;
 pub use zeroize::Zeroizing;
+

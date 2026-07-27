@@ -12,8 +12,7 @@
 // - `pub_key` — the serialized composite public key (2782 bytes):
 //     [Dilithium5 pk (2592 B)] ‖ [P-521 pk (133 B)] ‖ [Ed448 pk (57 B)]
 //   Embedded in the transaction to allow `recover_sender` to verify the
-//   hybrid signature without a separate public-key lookup — mirrors Go's
-//   `rawPks()` field in `BlackChainTxType`.
+//   hybrid signature without a separate public-key lookup.
 
 use alloy_primitives::{Address, Bytes, U256};
 use serde::{Deserialize, Serialize};

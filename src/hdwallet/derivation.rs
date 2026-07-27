@@ -1,9 +1,8 @@
 // derivation.rs — Seed derivation utilities.
 //
-// Implements the same key-derivation protocol as the Go reference library
-// (`blackchain_crypto/hdwallet`).
+// Implements the BlackChain hybrid-wallet seed-derivation protocol.
 //
-// ## mdECC per-curve seed derivation  (Go: `DeriveMdECCCurveSeed`)
+// ## mdECC per-curve seed derivation
 //
 // Given the 16-byte mdECC master seed (bytes 32..48 of the BIP-39 root seed)
 // and a curve identifier byte, produces a cryptographically independent seed
@@ -16,7 +15,7 @@
 // before HKDF expansion, so the Dilithium, P-521, and Ed448 key material are
 // mutually independent even though they share a common root.
 //
-// ## BIP32 child-key derivation  (Go: `DeriveKey` via `btcd/hdkeychain`)
+// ## BIP32 child-key derivation
 //
 // Given the 64-byte BIP-39 master seed and an array of hardened child indices,
 // returns a fresh 64-byte child seed:
@@ -37,7 +36,7 @@ use zeroize::Zeroizing;
 use crate::error::CryptoError;
 
 // ---------------------------------------------------------------------------
-// Curve ID constants (must match Go's hdwallet/wallet.go)
+// Curve ID constants
 // ---------------------------------------------------------------------------
 
 /// Curve identifier used in mdECC seed derivation for P-521.
@@ -51,8 +50,6 @@ pub const CURVE_ID_ED448: u8 = 2;
 
 /// Derives a cryptographically independent per-curve seed from the master
 /// mdECC seed (16 bytes, taken from bytes 32..48 of the BIP-39 root seed).
-///
-/// Matches Go's `DeriveMdECCCurveSeed(mdECCSeed, curveID, seedSize)`.
 ///
 /// # Arguments
 /// - `mdecc_seed` — the 16-byte mdECC master slice.
@@ -94,8 +91,6 @@ pub fn derive_mdecc_curve_seed(
 /// Derives a 64-byte child seed from `master_seed` following the BIP32
 /// hardened-only derivation path given in `path`.
 ///
-/// Matches Go's `DeriveKey(masterSeed, path)` using `btcd/hdkeychain`.
-///
 /// `path` is a slice of raw uint32 child indices.  All must be hardened
 /// (≥ `0x80000000`); the function returns `Err` if any are not.
 ///
@@ -107,7 +102,7 @@ pub fn derive_mdecc_curve_seed(
 /// - `Err` if any path index is not hardened.
 /// - `Err` if BIP32 derivation fails (e.g. invalid master seed length).
 pub fn derive_child_seed(master_seed: &[u8], path: &[u32]) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
-    // Enforce hardened-only policy (matches Go's DeriveKey validation).
+    // Enforce hardened-only policy.
     for (i, &idx) in path.iter().enumerate() {
         if idx < 0x8000_0000 {
             return Err(CryptoError::Custom(format!(
@@ -132,7 +127,6 @@ pub fn derive_child_seed(master_seed: &[u8], path: &[u32]) -> Result<Zeroizing<V
     }
 
     // Combine private key bytes (32) + chain code (32) → 64-byte child seed.
-    // This matches Go: append(privKey.Serialize(), chainCode...)
     let priv_bytes = key.private_key().to_bytes();
     let chain_code = key.attrs().chain_code;
 
