@@ -12,18 +12,16 @@ ed448-rust = "0.1.1"
 getrandom = "0.4.2"
 hkdf = "0.12"
 p521 = "0.13.3"
-rand = "0.8.5"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 sha3 = "0.10"
 sha2 = { version = "0.10", default-features = false }
 thiserror = "2.0.18"
 zeroize = { version = "1.8.2", features = ["zeroize_derive", "derive"] }
 rand_core          = "0.6"
-rand_chacha        = "0.3"
 subtle             = "2"
 hex                = "0.4"
-crystals-dilithium = "2.0.0"
 ed448-goldilocks = "0.9.0"
+ml-dsa = "0.1.1"
 
 [dev-dependencies]
 proptest = "1.5.0"

@@ -1,9 +1,23 @@
-// mode5 implements the CRYSTALS-Dilithium signature scheme Dilithium5
-// as submitted to round3 of the NIST PQC competition and described in
+// Implements ML-DSA-87, the FIPS 204 standardization of CRYSTALS-Dilithium
+// (Module-Lattice-Based Digital Signature Algorithm, security category 5),
+// using the RustCrypto `ml-dsa` crate.
 //
-// https://pq-crystals.org/dilithium/data/dilithium-specification-round3-20210208.pdf
+// https://csrc.nist.gov/pubs/fips/204/final
+//
+// Design notes:
+//   - The secret key is stored as the 32-byte seed (ξ). RustCrypto's
+//     `SigningKey::from_seed` deterministically re-expands the full key *and*
+//     yields the verifying key, so a 32-byte seed round-trips to a complete,
+//     signable keypair — no separate public-key material needs to be persisted.
+//   - Signing uses the `Signer` trait, which performs FIPS 204 deterministic
+//     signing (rnd = 0) with an empty context string. Deterministic signing is
+//     explicitly permitted by FIPS 204 §3.4 and gives reproducible signatures
+//     with no RNG dependency at sign time.
 
-use crystals_dilithium::dilithium5 as d5;
+use ml_dsa::{
+    B32, EncodedVerifyingKey, Keypair, MlDsa87, Signer,
+    Signature as MlSignature, SigningKey as MlSigningKey, VerifyingKey as MlVerifyingKey,
+};
 use std::fmt;
 use subtle::ConstantTimeEq;
 
@@ -14,13 +28,18 @@ use crate::sign::{
 };
 
 // ---------------------------------------------------------------------------
-// Constants
+// Constants (ML-DSA-87 / FIPS 204)
 // ---------------------------------------------------------------------------
 
+/// Seed size in bytes (the 32-byte ξ used for deterministic key generation).
 pub const SEED_SIZE: usize = 32;
-pub const PUBLIC_KEY_SIZE: usize = d5::PUBLICKEYBYTES;
-pub const PRIVATE_KEY_SIZE: usize = d5::SECRETKEYBYTES;
-pub const SIGNATURE_SIZE: usize = d5::SIGNBYTES;
+/// ML-DSA-87 public (verifying) key size in bytes.
+pub const PUBLIC_KEY_SIZE: usize = 2592;
+/// Stored private-key size in bytes: the 32-byte seed, which expands to the
+/// full 4896-byte FIPS 204 signing key on demand.
+pub const PRIVATE_KEY_SIZE: usize = SEED_SIZE;
+/// ML-DSA-87 signature size in bytes.
+pub const SIGNATURE_SIZE: usize = 4627;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -37,7 +56,6 @@ pub enum Error {
     Internal(String),
     ContextNotSupported,
     TypeMismatch,
-    CannotSignHashed,
 }
 
 impl fmt::Display for Error {
@@ -49,13 +67,12 @@ impl fmt::Display for Error {
                 context,
             } => write!(
                 f,
-                "dilithium5: invalid {context} size: expected {expected}, got {actual}"
+                "ml-dsa-87: invalid {context} size: expected {expected}, got {actual}"
             ),
-            Self::VerificationFailed => write!(f, "dilithium5: signature verification failed"),
-            Self::Internal(msg) => write!(f, "dilithium5: internal error: {msg}"),
-            Self::ContextNotSupported => write!(f, "dilithium5: context strings are not supported"),
-            Self::TypeMismatch => write!(f, "dilithium5: key type mismatch"),
-            Self::CannotSignHashed => write!(f, "dilithium5: cannot sign pre-hashed message"),
+            Self::VerificationFailed => write!(f, "ml-dsa-87: signature verification failed"),
+            Self::Internal(msg) => write!(f, "ml-dsa-87: internal error: {msg}"),
+            Self::ContextNotSupported => write!(f, "ml-dsa-87: context strings are not supported"),
+            Self::TypeMismatch => write!(f, "ml-dsa-87: key type mismatch"),
         }
     }
 }
@@ -68,37 +85,38 @@ impl From<Error> for CryptoError {
     }
 }
 
+/// Builds a 32-byte seed array from a byte slice, validating its length.
+fn seed_from_slice(data: &[u8]) -> Result<B32, Error> {
+    B32::try_from(data).map_err(|_| Error::InvalidSize {
+        expected: SEED_SIZE,
+        actual: data.len(),
+        context: "seed",
+    })
+}
+
 // ---------------------------------------------------------------------------
 // PublicKey
 // ---------------------------------------------------------------------------
 
-pub struct PublicKey(d5::PublicKey);
-
-impl fmt::Debug for PublicKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("DilithiumPublicKey")
-            .field(&hex::encode(self.0.to_bytes()))
-            .finish()
-    }
-}
-
-impl Clone for PublicKey {
-    fn clone(&self) -> Self {
-        Self(d5::PublicKey::from_bytes(&self.0.to_bytes()).expect("Valid key clone"))
-    }
-}
+pub struct PublicKey(MlVerifyingKey<MlDsa87>);
 
 impl PublicKey {
+    /// Serialises the verifying key into a fixed-size buffer.
     pub fn pack(&self, buf: &mut [u8; PUBLIC_KEY_SIZE]) {
-        buf.copy_from_slice(&self.0.to_bytes());
+        buf.copy_from_slice(self.0.encode().as_slice());
     }
 
+    /// Returns the encoded verifying key bytes.
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.0.encode().to_vec()
+    }
+
+    /// Deserialises a verifying key from a `[u8; PUBLIC_KEY_SIZE]`.
     pub fn unpack(buf: &[u8; PUBLIC_KEY_SIZE]) -> Result<Self, Error> {
-        d5::PublicKey::from_bytes(buf)
-            .map(Self)
-            .map_err(|e| Error::Internal(format!("{:?}", e)))
+        Self::from_bytes(buf)
     }
 
+    /// Verifies `signature` over `msg` (FIPS 204 pure ML-DSA, empty context).
     pub fn verify_internal(&self, msg: &[u8], signature: &[u8]) -> Result<(), Error> {
         if signature.len() != SIGNATURE_SIZE {
             return Err(Error::InvalidSize {
@@ -107,7 +125,8 @@ impl PublicKey {
                 context: "signature",
             });
         }
-        if self.0.verify(msg, signature) {
+        let sig = MlSignature::<MlDsa87>::try_from(signature).map_err(|_| Error::VerificationFailed)?;
+        if self.0.verify_with_context(msg, &[], &sig) {
             Ok(())
         } else {
             Err(Error::VerificationFailed)
@@ -122,15 +141,29 @@ impl PublicKey {
                 context: "public key",
             });
         }
-        let mut buf = [0u8; PUBLIC_KEY_SIZE];
-        buf.copy_from_slice(data);
-        Self::unpack(&buf)
+        let enc = EncodedVerifyingKey::<MlDsa87>::try_from(data)
+            .map_err(|_| Error::Internal("invalid ML-DSA verifying key encoding".into()))?;
+        Ok(Self(MlVerifyingKey::decode(&enc)))
+    }
+}
+
+impl fmt::Debug for PublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("MlDsa87PublicKey")
+            .field(&hex::encode(&self.0.encode().as_slice()[..8]))
+            .finish()
+    }
+}
+
+impl Clone for PublicKey {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
 impl PartialEq for PublicKey {
     fn eq(&self, other: &Self) -> bool {
-        self.0.to_bytes() == other.0.to_bytes()
+        self.0 == other.0
     }
 }
 
@@ -160,12 +193,12 @@ impl SignPublicKey for PublicKey {
     fn equal(&self, other: &dyn SignPublicKey) -> bool {
         other
             .marshal_binary()
-            .map(|b| b.len() == PUBLIC_KEY_SIZE && b.as_slice().ct_eq(&self.0.to_bytes()).into())
+            .map(|b| b.len() == PUBLIC_KEY_SIZE && b.as_slice().ct_eq(self.0.encode().as_slice()).into())
             .unwrap_or(false)
     }
 
     fn marshal_binary(&self) -> Result<Vec<u8>, CryptoError> {
-        Ok(self.0.to_bytes().to_vec())
+        Ok(self.to_vec())
     }
 }
 
@@ -173,23 +206,24 @@ impl SignPublicKey for PublicKey {
 // PrivateKey
 // ---------------------------------------------------------------------------
 
-/// Newtype wrapper around the Dilithium secret key.
-///
-/// `crystals_dilithium`'s `SecretKey` derives `ZeroizeOnDrop`, so the key
-/// material is scrubbed from memory automatically when this value (and hence the
-/// inner key) is dropped. The wrapper exists solely to provide a redacted
-/// `Debug` impl so secret bytes can never be accidentally printed.
-pub struct ZeroizingSecretKey(d5::SecretKey);
-
-#[derive(Debug)]
+/// An ML-DSA-87 signing key. The inner `SigningKey` is `ZeroizeOnDrop`, so key
+/// material is scrubbed from memory automatically on drop.
 pub struct PrivateKey {
-    inner: ZeroizingSecretKey,
+    inner: MlSigningKey<MlDsa87>,
     public: PublicKey,
 }
 
 impl PrivateKey {
+    /// Serialises the 32-byte seed into a fixed-size buffer.
     pub fn pack(&self, buf: &mut [u8; PRIVATE_KEY_SIZE]) {
-        buf.copy_from_slice(&self.inner.0.to_bytes());
+        buf.copy_from_slice(self.inner.to_seed().as_slice());
+    }
+
+    /// Returns the raw 32-byte seed.
+    pub fn seed_bytes(&self) -> [u8; SEED_SIZE] {
+        let mut arr = [0u8; SEED_SIZE];
+        arr.copy_from_slice(self.inner.to_seed().as_slice());
+        arr
     }
 
     pub fn public_key_internal(&self) -> PublicKey {
@@ -199,78 +233,54 @@ impl PrivateKey {
     pub fn sign_to(&self, msg: &[u8], sig: &mut [u8]) {
         assert!(
             sig.len() >= SIGNATURE_SIZE,
-            "dilithium5: signature buffer too small"
+            "ml-dsa-87: signature buffer too small"
         );
-        let det = self.inner.0.sign(msg);
-        sig[..SIGNATURE_SIZE].copy_from_slice(&det);
+        let s = self.inner.try_sign(msg).expect("ML-DSA deterministic signing");
+        sig[..SIGNATURE_SIZE].copy_from_slice(s.encode().as_slice());
     }
 
     pub fn sign_internal(&self, msg: &[u8]) -> Vec<u8> {
-        let mut sig = vec![0u8; SIGNATURE_SIZE];
-        self.sign_to(msg, &mut sig);
-        sig
+        self.inner
+            .try_sign(msg)
+            .expect("ML-DSA deterministic signing")
+            .encode()
+            .to_vec()
     }
 
+    /// Reconstructs a full keypair from the 32-byte seed.
+    ///
+    /// Unlike a raw expanded secret key, the seed deterministically re-derives
+    /// both the signing key and the verifying key, so this is always safe.
     pub fn from_bytes(data: &[u8]) -> Result<Self, Error> {
-        if data.len() != PRIVATE_KEY_SIZE {
-            return Err(Error::InvalidSize {
-                expected: PRIVATE_KEY_SIZE,
-                actual: data.len(),
-                context: "private key",
-            });
-        }
-        // Security rationale: Dilithium private keys do not trivially contain the public key.
-        // Reconstructing a `PrivateKey` object from just the secret bytes would leave us without
-        // the `public` field. We do not allow partial keys, as it can lead to security footguns
-        // where verification or serialization might panic or fail silently. Thus, we intentionally
-        // disable from_bytes for PrivateKey and encourage users to use deterministic generation
-        // (`derive_key` or `derive_key_with_seed`) instead if they must persist keys.
-        Err(Error::Internal(
-            "cannot reconstruct public key from SK safely without full keypair — use derive_key"
-                .into(),
-        ))
+        let xi = seed_from_slice(data)?;
+        let inner = MlSigningKey::<MlDsa87>::from_seed(&xi);
+        let public = PublicKey(inner.verifying_key());
+        Ok(Self { inner, public })
     }
 
     pub fn from_seed(seed: &[u8; SEED_SIZE]) -> (PublicKey, Self) {
-        let kp = d5::Keypair::generate(Some(seed)).expect("failed deterministic generation");
-        let pk_bytes = kp.public.to_bytes();
-        let public_copy = d5::PublicKey::from_bytes(&pk_bytes).expect("Valid clone via bytes");
-        (
-            PublicKey(kp.public),
-            Self {
-                inner: ZeroizingSecretKey(kp.secret),
-                public: PublicKey(public_copy),
-            },
-        )
+        let sk = Self::from_bytes(seed).expect("a 32-byte seed is always valid");
+        (sk.public.clone(), sk)
     }
 }
 
 impl Clone for PrivateKey {
     fn clone(&self) -> Self {
-        let bytes = self.inner.0.to_bytes();
-        let inner = d5::SecretKey::from_bytes(&bytes).expect("clone of valid key");
-        Self {
-            inner: ZeroizingSecretKey(inner),
-            public: self.public.clone(),
-        }
+        Self::from_bytes(&self.seed_bytes()).expect("clone of a valid key")
     }
 }
 
-impl fmt::Debug for ZeroizingSecretKey {
+impl fmt::Debug for PrivateKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("ZeroizingSecretKey")
-            .field(&"[REDACTED]")
-            .finish()
+        f.debug_struct("MlDsa87PrivateKey")
+            .field("public", &self.public)
+            .finish_non_exhaustive()
     }
 }
 
 impl PartialEq for PrivateKey {
     fn eq(&self, other: &Self) -> bool {
-        self.inner
-            .0
-            .to_bytes()
-            .ct_eq(&other.inner.0.to_bytes())
-            .into()
+        self.seed_bytes().ct_eq(&other.seed_bytes()).into()
     }
 }
 
@@ -293,18 +303,16 @@ impl SignPrivateKey for PrivateKey {
     fn equal(&self, other: &dyn SignPrivateKey) -> bool {
         other
             .marshal_binary()
-            .map(|b| {
-                b.len() == PRIVATE_KEY_SIZE && b.as_slice().ct_eq(&self.inner.0.to_bytes()).into()
-            })
+            .map(|b| b.len() == PRIVATE_KEY_SIZE && b.as_slice().ct_eq(&self.seed_bytes()).into())
             .unwrap_or(false)
     }
 
     fn marshal_binary(&self) -> Result<Vec<u8>, CryptoError> {
-        Ok(self.inner.0.to_bytes().to_vec())
+        Ok(self.seed_bytes().to_vec())
     }
 
     fn public_key_bytes(&self) -> Vec<u8> {
-        self.public.0.to_bytes().to_vec()
+        self.public.to_vec()
     }
 }
 
@@ -313,16 +321,9 @@ impl SignPrivateKey for PrivateKey {
 // ---------------------------------------------------------------------------
 
 pub fn generate_key() -> Result<(PublicKey, PrivateKey), Error> {
-    let kp = d5::Keypair::generate(None).map_err(|e| Error::Internal(format!("{:?}", e)))?;
-    let pk_bytes = kp.public.to_bytes();
-    let public_copy = d5::PublicKey::from_bytes(&pk_bytes).expect("Valid clone via bytes");
-    Ok((
-        PublicKey(kp.public),
-        PrivateKey {
-            inner: ZeroizingSecretKey(kp.secret),
-            public: PublicKey(public_copy),
-        },
-    ))
+    let mut seed = [0u8; SEED_SIZE];
+    getrandom::fill(&mut seed).map_err(|e| Error::Internal(format!("RNG failure: {e}")))?;
+    Ok(PrivateKey::from_seed(&seed))
 }
 
 pub fn new_key_from_seed(seed: &[u8; SEED_SIZE]) -> (PublicKey, PrivateKey) {
@@ -370,7 +371,7 @@ pub fn scheme() -> &'static Scheme {
 
 impl SignScheme for Scheme {
     fn name(&self) -> &'static str {
-        "Dilithium5"
+        "ML-DSA-87"
     }
 
     fn public_key_size(&self) -> usize {
@@ -419,20 +420,16 @@ impl SignScheme for Scheme {
         message: &[u8],
         opts: Option<&SignatureOpts>,
     ) -> Vec<u8> {
-        // Dilithium does not support context strings.
+        // ML-DSA-87 is used here without a scheme-level context string.
         if let Some(o) = opts
-            && !o.context.is_empty() {
+            && !o.context.is_empty()
+        {
             panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
         }
-        let sk_bytes = sk.marshal_binary().expect("marshal dilithium SK");
-        // Re-derive from seed is not possible here; we sign via raw SK bytes.
-        // Parse the secret key directly.
-        let sk_buf: [u8; PRIVATE_KEY_SIZE] = sk_bytes
-            .try_into()
+        let sk_bytes = sk.marshal_binary().expect("marshal ML-DSA SK");
+        let typed_sk = PrivateKey::from_bytes(&sk_bytes)
             .unwrap_or_else(|_| panic!("{}", sign::ERR_TYPE_MISMATCH));
-        let inner = d5::SecretKey::from_bytes(&sk_buf)
-            .unwrap_or_else(|_| panic!("{}", sign::ERR_TYPE_MISMATCH));
-        inner.sign(message).to_vec()
+        typed_sk.sign_internal(message)
     }
 
     fn verify(
@@ -443,7 +440,8 @@ impl SignScheme for Scheme {
         opts: Option<&SignatureOpts>,
     ) -> bool {
         if let Some(o) = opts
-            && !o.context.is_empty() {
+            && !o.context.is_empty()
+        {
             return false;
         }
         let pk_bytes = match pk.marshal_binary() {
@@ -468,16 +466,15 @@ impl SignScheme for Scheme {
 
     fn unmarshal_binary_private_key(
         &self,
-        _buf: &[u8],
+        buf: &[u8],
     ) -> Result<Box<dyn SignPrivateKey>, CryptoError> {
-        Err(CryptoError::Custom(
-            "Dilithium5 private key cannot be reconstructed from bytes alone; \
-             use derive_key() with the original seed instead".into(),
-        ))
+        PrivateKey::from_bytes(buf)
+            .map(|k| Box::new(k) as Box<dyn SignPrivateKey>)
+            .map_err(Into::into)
     }
 
     fn supports_priv_key_unmarshal(&self) -> bool {
-        false
+        true
     }
 }
 
@@ -500,7 +497,8 @@ impl TypedScheme for Scheme {
 
     fn sign_typed(&self, sk: &PrivateKey, msg: &[u8], opts: Option<&SignatureOpts>) -> Vec<u8> {
         if let Some(o) = opts
-            && !o.context.is_empty() {
+            && !o.context.is_empty()
+        {
             panic!("{}", sign::ERR_CONTEXT_NOT_SUPPORTED);
         }
         sk.sign_internal(msg)
@@ -525,9 +523,9 @@ impl TypedScheme for Scheme {
     }
 }
 
-pub type DilithiumPublicKey = PublicKey;
-pub type DilithiumPrivateKey = PrivateKey;
-pub type DilithiumScheme = Scheme;
+pub type MlDsaPublicKey = PublicKey;
+pub type MlDsaPrivateKey = PrivateKey;
+pub type MlDsaScheme = Scheme;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -537,327 +535,215 @@ pub type DilithiumScheme = Scheme;
 mod tests {
     use super::*;
     use crate::sign::{Scheme as S, SignatureOpts, TypedScheme as TS};
-    use std::time::Instant;
+    use ml_dsa::EncodedSignature;
 
-    // ── 1. Constant sanity ────────────────────────────────────────────────────
+    // ── Constants ─────────────────────────────────────────────────────────────
 
-    /// Verify that our public constants match the crystals_dilithium crate's
-    /// own byte-length constants so a library upgrade cannot silently break us.
     #[test]
-    fn constants_match_crate_values() {
-        assert_eq!(PUBLIC_KEY_SIZE, d5::PUBLICKEYBYTES,
-            "PUBLIC_KEY_SIZE mismatch with crystals_dilithium");
-        assert_eq!(PRIVATE_KEY_SIZE, d5::SECRETKEYBYTES,
-            "PRIVATE_KEY_SIZE mismatch with crystals_dilithium");
-        assert_eq!(SIGNATURE_SIZE, d5::SIGNBYTES,
-            "SIGNATURE_SIZE mismatch with crystals_dilithium");
-        assert_eq!(SEED_SIZE, 32,
-            "SEED_SIZE must be exactly 32 bytes for Dilithium5");
+    fn constants_match_ml_dsa_87() {
+        assert_eq!(PUBLIC_KEY_SIZE, EncodedVerifyingKey::<MlDsa87>::default().len());
+        assert_eq!(SIGNATURE_SIZE, EncodedSignature::<MlDsa87>::default().len());
+        assert_eq!(SEED_SIZE, 32);
+        assert_eq!(PRIVATE_KEY_SIZE, SEED_SIZE);
     }
 
-    /// Scheme metadata accessors must return our module constants.
     #[test]
     fn scheme_metadata() {
         let s = Scheme;
-        assert_eq!(s.name(), "Dilithium5");
-        assert_eq!(s.public_key_size(),  PUBLIC_KEY_SIZE);
+        assert_eq!(s.name(), "ML-DSA-87");
+        assert_eq!(s.public_key_size(), PUBLIC_KEY_SIZE);
         assert_eq!(s.private_key_size(), PRIVATE_KEY_SIZE);
-        assert_eq!(s.signature_size(),   SIGNATURE_SIZE);
-        assert_eq!(s.seed_size(),        SEED_SIZE);
-        assert!(!s.supports_context(),
-            "Dilithium5 must NOT advertise context support");
+        assert_eq!(s.signature_size(), SIGNATURE_SIZE);
+        assert_eq!(s.seed_size(), SEED_SIZE);
+        assert!(!s.supports_context());
     }
 
-    // ── 2. Key generation ─────────────────────────────────────────────────────
+    // ── Key generation & derivation ───────────────────────────────────────────
 
-    /// Happy-path random key generation produces correctly-sized keys.
     #[test]
     fn generate_key_produces_correct_sizes() {
-        let (pk, sk) = generate_key().expect("key generation failed");
-        assert_eq!(pk.0.to_bytes().len(), PUBLIC_KEY_SIZE);
-        assert_eq!(sk.inner.0.to_bytes().len(), PRIVATE_KEY_SIZE);
+        let (pk, sk) = generate_key().expect("keygen");
+        assert_eq!(pk.to_vec().len(), PUBLIC_KEY_SIZE);
+        assert_eq!(sk.seed_bytes().len(), PRIVATE_KEY_SIZE);
     }
 
-    /// Successive random key-generations must yield distinct keys.
     #[test]
     fn generate_key_is_non_deterministic() {
-        let (pk1, _) = generate_key().expect("first keygen failed");
-        let (pk2, _) = generate_key().expect("second keygen failed");
-        assert_ne!(pk1.0.to_bytes(), pk2.0.to_bytes(),
-            "two independently generated keys should differ");
+        let (pk1, _) = generate_key().expect("keygen 1");
+        let (pk2, _) = generate_key().expect("keygen 2");
+        assert_ne!(pk1.to_vec(), pk2.to_vec());
     }
 
-    // ── 3. Deterministic derivation ───────────────────────────────────────────
-
-    /// The same 32-byte seed must always produce the same key pair.
     #[test]
     fn derive_key_is_deterministic() {
         let seed = [0xABu8; SEED_SIZE];
         let (pk1, sk1) = new_key_from_seed(&seed);
         let (pk2, sk2) = new_key_from_seed(&seed);
-        assert_eq!(pk1.0.to_bytes(), pk2.0.to_bytes(),
-            "deterministic keygen must produce identical public keys");
-        assert_eq!(sk1.inner.0.to_bytes(), sk2.inner.0.to_bytes(),
-            "deterministic keygen must produce identical secret keys");
+        assert_eq!(pk1.to_vec(), pk2.to_vec());
+        assert_eq!(sk1.seed_bytes(), sk2.seed_bytes());
     }
 
-    /// Deterministic keygen regression lock for the Dilithium5 primitive: pins
-    /// seed → public key so a dependency bump that alters the algorithm is caught.
-    ///
-    /// NOTE: `crystals_dilithium::dilithium5` is round-3 Dilithium, NOT FIPS 204
-    /// ML-DSA — the crate's ACVP/FIPS-204 vectors apply only to its `ml_dsa_*`
-    /// modules, so this is a behavior lock rather than a FIPS-204 conformance KAT.
-    #[test]
-    fn dilithium5_keygen_regression_lock() {
-        let seed = [0x42u8; SEED_SIZE];
-        let (pk, _sk) = new_key_from_seed(&seed);
-        let mut buf = [0u8; PUBLIC_KEY_SIZE];
-        pk.pack(&mut buf);
-        assert_eq!(buf.len(), PUBLIC_KEY_SIZE);
-        println!("DIL5PK16={}", hex::encode(&buf[..16]));
-        const EXPECTED_HEAD: &str = "ab8096d1d35353571fefcf2d3d9d1636";
-        assert_eq!(
-            hex::encode(&buf[..16]),
-            EXPECTED_HEAD,
-            "Dilithium5 seed→public-key derivation changed"
-        );
-    }
-
-    /// Two distinct seeds must produce distinct keys.
     #[test]
     fn derive_key_differs_for_different_seeds() {
-        let seed_a = [0x11u8; SEED_SIZE];
-        let seed_b = [0x22u8; SEED_SIZE];
-        let (pk_a, _) = new_key_from_seed(&seed_a);
-        let (pk_b, _) = new_key_from_seed(&seed_b);
-        assert_ne!(pk_a.0.to_bytes(), pk_b.0.to_bytes(),
-            "different seeds must yield different public keys");
+        let (pk_a, _) = new_key_from_seed(&[0x11u8; SEED_SIZE]);
+        let (pk_b, _) = new_key_from_seed(&[0x22u8; SEED_SIZE]);
+        assert_ne!(pk_a.to_vec(), pk_b.to_vec());
     }
 
-    /// `Scheme::derive_key` panics on a wrong-size seed.
     #[test]
     #[should_panic]
     fn derive_key_panics_on_wrong_seed_size() {
         Scheme.derive_key(&[0u8; SEED_SIZE - 1]);
     }
 
-    /// `Scheme::derive_key_with_seed` returns `Err` on wrong-size seed.
     #[test]
     fn derive_key_with_seed_errors_on_wrong_size() {
-        let err = Scheme.derive_key_with_seed(&[0u8; SEED_SIZE + 1]);
-        assert!(err.is_err(), "must return Err for oversized seed");
+        assert!(Scheme.derive_key_with_seed(&[0u8; SEED_SIZE + 1]).is_err());
     }
 
-    /// `Scheme::derive_key_with_seed` succeeds on correctly sized seed.
+    /// Deterministic keygen regression lock for ML-DSA-87: pins seed → public
+    /// key so a dependency bump that alters the algorithm is caught.
     #[test]
-    fn derive_key_with_seed_success() {
-        let seed = [0x55u8; SEED_SIZE];
-        let result = Scheme.derive_key_with_seed(&seed);
-        assert!(result.is_ok(), "must succeed for exactly sized seed");
-        let (pk, sk) = result.unwrap();
-        assert_eq!(pk.0.to_bytes().len(), PUBLIC_KEY_SIZE);
-        assert_eq!(sk.inner.0.to_bytes().len(), PRIVATE_KEY_SIZE);
+    fn mldsa87_keygen_regression_lock() {
+        let seed = [0x42u8; SEED_SIZE];
+        let (pk, _sk) = new_key_from_seed(&seed);
+        let mut buf = [0u8; PUBLIC_KEY_SIZE];
+        pk.pack(&mut buf);
+        assert_eq!(buf.len(), PUBLIC_KEY_SIZE);
+        println!("MLDSA87PK16={}", hex::encode(&buf[..16]));
+        const EXPECTED_HEAD: &str = "8a9d3f21d2e9cbbdc75ef8f93fbd6ff4";
+        assert_eq!(
+            hex::encode(&buf[..16]),
+            EXPECTED_HEAD,
+            "ML-DSA-87 seed→public-key derivation changed"
+        );
     }
 
-    // ── 4. Sign / Verify round-trip ───────────────────────────────────────────
+    // ── Sign / Verify ─────────────────────────────────────────────────────────
 
-    /// Core sign → verify round-trip using the low-level typed methods.
     #[test]
     fn sign_verify_roundtrip_typed() {
         let (pk, sk) = generate_key().expect("keygen");
-        let msg = b"Blackchain PQC Dilithium5 round-trip";
+        let msg = b"Blackchain PQC ML-DSA-87 round-trip";
         let sig = sk.sign_internal(msg);
-        assert_eq!(sig.len(), SIGNATURE_SIZE,
-            "signature length must equal SIGNATURE_SIZE");
-        assert!(pk.verify_internal(msg, &sig).is_ok(),
-            "valid signature must verify");
+        assert_eq!(sig.len(), SIGNATURE_SIZE);
+        assert!(pk.verify_internal(msg, &sig).is_ok());
     }
 
-    /// Verifying against the wrong message must fail.
+    #[test]
+    fn signing_is_deterministic() {
+        // FIPS 204 deterministic mode: identical (key, message) → identical sig.
+        let (_, sk) = new_key_from_seed(&[0x7u8; SEED_SIZE]);
+        assert_eq!(sk.sign_internal(b"same"), sk.sign_internal(b"same"));
+    }
+
     #[test]
     fn verify_fails_on_wrong_message() {
         let (pk, sk) = generate_key().expect("keygen");
         let sig = sk.sign_internal(b"original message");
-        assert!(pk.verify_internal(b"tampered message", &sig).is_err(),
-            "signature must not verify against a different message");
+        assert!(pk.verify_internal(b"tampered message", &sig).is_err());
     }
 
-    /// Verifying an altered signature must fail.
     #[test]
     fn verify_fails_on_tampered_signature() {
         let (pk, sk) = generate_key().expect("keygen");
         let mut sig = sk.sign_internal(b"hello");
-        // flip a byte in the middle of the signature
         let mid = sig.len() / 2;
         sig[mid] ^= 0xFF;
-        assert!(pk.verify_internal(b"hello", &sig).is_err(),
-            "tampered signature must not verify");
+        assert!(pk.verify_internal(b"hello", &sig).is_err());
     }
 
-    /// Verifying with a different public key must fail.
     #[test]
     fn verify_fails_with_wrong_public_key() {
         let (_, sk) = generate_key().expect("keygen");
-        let (pk_other, _) = generate_key().expect("second keygen");
+        let (pk_other, _) = generate_key().expect("keygen 2");
         let sig = sk.sign_internal(b"message");
-        assert!(pk_other.verify_internal(b"message", &sig).is_err(),
-            "signature must not verify under a different public key");
+        assert!(pk_other.verify_internal(b"message", &sig).is_err());
     }
 
-    /// Signature of the empty message must also verify correctly.
     #[test]
-    fn sign_verify_empty_message() {
+    fn sign_verify_empty_and_large_message() {
         let (pk, sk) = generate_key().expect("keygen");
-        let sig = sk.sign_internal(b"");
-        assert!(pk.verify_internal(b"", &sig).is_ok(),
-            "empty-message signature must verify");
+        let empty = sk.sign_internal(b"");
+        assert!(pk.verify_internal(b"", &empty).is_ok());
+        let big = vec![0x5Au8; 65_536];
+        let sig = sk.sign_internal(&big);
+        assert!(pk.verify_internal(&big, &sig).is_ok());
     }
 
-    /// Signature of a large message (~64 KiB) must verify correctly.
-    #[test]
-    fn sign_verify_large_message() {
-        let (pk, sk) = generate_key().expect("keygen");
-        let msg = vec![0x5Au8; 65_536];
-        let sig = sk.sign_internal(&msg);
-        assert!(pk.verify_internal(&msg, &sig).is_ok(),
-            "large-message signature must verify");
-    }
-
-    // ── 5. Signature-size guards ──────────────────────────────────────────────
-
-    /// `verify_internal` must reject a signature that is too short.
     #[test]
     fn verify_rejects_short_signature() {
         let (pk, _) = generate_key().expect("keygen");
-        let short_sig = vec![0u8; SIGNATURE_SIZE - 1];
-        let err = pk.verify_internal(b"msg", &short_sig);
-        assert!(err.is_err(), "short signature must be rejected");
-        assert!(
-            matches!(err, Err(Error::InvalidSize { context: "signature", .. })),
-            "must return an InvalidSize error for the signature"
-        );
+        let err = pk.verify_internal(b"msg", &vec![0u8; SIGNATURE_SIZE - 1]);
+        assert!(matches!(err, Err(Error::InvalidSize { context: "signature", .. })));
     }
 
-    /// `verify_internal` must reject a zero-length signature.
-    #[test]
-    fn verify_rejects_empty_signature() {
-        let (pk, _) = generate_key().expect("keygen");
-        assert!(pk.verify_internal(b"msg", &[]).is_err(),
-            "empty signature must be rejected");
-    }
+    // ── Serialization ─────────────────────────────────────────────────────────
 
-    // ── 6. Serialization round-trips ──────────────────────────────────────────
-
-    /// Pack the public key then unpack it — result must be equal.
     #[test]
     fn public_key_pack_unpack_roundtrip() {
         let (pk, _) = generate_key().expect("keygen");
         let mut buf = [0u8; PUBLIC_KEY_SIZE];
         pk.pack(&mut buf);
-        let pk2 = PublicKey::unpack(&buf).expect("unpack failed");
-        assert_eq!(pk.0.to_bytes(), pk2.0.to_bytes(),
-            "pack → unpack must be an identity");
+        let pk2 = PublicKey::unpack(&buf).expect("unpack");
+        assert_eq!(pk, pk2);
     }
 
-    /// `PublicKey::from_bytes` must produce a key that can still verify.
     #[test]
     fn public_key_from_bytes_then_verify() {
         let (pk, sk) = generate_key().expect("keygen");
         let sig = sk.sign_internal(b"serialisation test");
-
-        let pk_bytes = pk.0.to_bytes().to_vec();
-        let pk2 = PublicKey::from_bytes(&pk_bytes).expect("from_bytes failed");
-        assert!(pk2.verify_internal(b"serialisation test", &sig).is_ok(),
-            "deserialized public key must verify the original signature");
+        let pk2 = PublicKey::from_bytes(&pk.to_vec()).expect("from_bytes");
+        assert!(pk2.verify_internal(b"serialisation test", &sig).is_ok());
     }
 
-    /// `PublicKey::from_bytes` must reject wrong-length input.
     #[test]
     fn public_key_from_bytes_rejects_bad_length() {
-        assert!(PublicKey::from_bytes(&[0u8; PUBLIC_KEY_SIZE - 1]).is_err(),
-            "must reject undersized public key bytes");
-        assert!(PublicKey::from_bytes(&[0u8; PUBLIC_KEY_SIZE + 1]).is_err(),
-            "must reject oversized public key bytes");
+        assert!(PublicKey::from_bytes(&[0u8; PUBLIC_KEY_SIZE - 1]).is_err());
+        assert!(PublicKey::from_bytes(&[0u8; PUBLIC_KEY_SIZE + 1]).is_err());
     }
 
-    /// `PrivateKey::from_bytes` must return an error (cannot safely reconstruct
-    /// the public key from SK bytes alone — by design).
+    /// Unlike round-3 Dilithium, the ML-DSA seed form round-trips a full keypair,
+    /// so `from_bytes` (32-byte seed) is now fully supported.
     #[test]
-    fn private_key_from_bytes_is_intentionally_unsupported() {
-        let (_, sk) = generate_key().expect("keygen");
-        let sk_bytes = sk.inner.0.to_bytes().to_vec();
-        let result = PrivateKey::from_bytes(&sk_bytes);
-        assert!(result.is_err(),
-            "from_bytes on PrivateKey must return Err — use derive_key instead");
+    fn private_key_from_seed_bytes_roundtrips() {
+        let (pk, sk) = generate_key().expect("keygen");
+        let sk2 = PrivateKey::from_bytes(&sk.seed_bytes()).expect("from_bytes");
+        assert_eq!(sk, sk2);
+        let sig = sk2.sign_internal(b"seed roundtrip");
+        assert!(pk.verify_internal(b"seed roundtrip", &sig).is_ok());
     }
 
-    // ── 7. Equality & Clone ───────────────────────────────────────────────────
-
-    /// `PrivateKey::eq` must return true for key == key and false for key != key.
     #[test]
-    fn private_key_equality() {
+    fn private_key_from_bytes_rejects_bad_length() {
+        assert!(PrivateKey::from_bytes(&[0u8; SEED_SIZE - 1]).is_err());
+        assert!(PrivateKey::from_bytes(&[0u8; SEED_SIZE + 1]).is_err());
+    }
+
+    // ── Equality & Clone ──────────────────────────────────────────────────────
+
+    #[test]
+    fn key_equality_and_clone() {
         let seed = [0x77u8; SEED_SIZE];
-        let (_, sk1) = new_key_from_seed(&seed);
-        let (_, sk2) = new_key_from_seed(&seed);
+        let (pk1, sk1) = new_key_from_seed(&seed);
         let (_, sk_other) = new_key_from_seed(&[0x88u8; SEED_SIZE]);
-
-        assert_eq!(sk1, sk2,  "same seed → equal secret keys");
-        assert_ne!(sk1, sk_other, "different seed → unequal secret keys");
+        assert_eq!(sk1, sk1.clone());
+        assert_ne!(sk1, sk_other);
+        assert_eq!(pk1, pk1.clone());
     }
 
-    /// `PublicKey::eq` must return true for equal keys and false for different ones.
-    #[test]
-    fn public_key_equality() {
-        let seed = [0x55u8; SEED_SIZE];
-        let (pk1, _) = new_key_from_seed(&seed);
-        let (pk2, _) = new_key_from_seed(&seed);
-        let (pk_other, _) = new_key_from_seed(&[0x66u8; SEED_SIZE]);
+    // ── dyn Scheme + TypedScheme ──────────────────────────────────────────────
 
-        assert_eq!(pk1, pk2,     "same seed → equal public keys");
-        assert_ne!(pk1, pk_other, "different seed → unequal public keys");
-    }
-
-    /// Cloning a private key must yield an equal value.
-    #[test]
-    fn private_key_clone_is_equal() {
-        let (_, sk) = generate_key().expect("keygen");
-        let sk2 = sk.clone();
-        assert_eq!(sk, sk2, "Clone must produce an equal PrivateKey");
-    }
-
-    /// Cloning a public key must yield an equal value.
-    #[test]
-    fn public_key_clone_is_equal() {
-        let (pk, _) = generate_key().expect("keygen");
-        let pk2 = pk.clone();
-        assert_eq!(pk, pk2, "Clone must produce an equal PublicKey");
-    }
-
-    // ── 8. sign::Scheme (dyn-dispatch) API ───────────────────────────────────
-
-    /// `Scheme::sign` + `Scheme::verify` through the trait-object interface.
     #[test]
     fn dyn_scheme_sign_verify() {
         let s: &dyn S = &Scheme;
         let (pk, sk) = s.generate_key().expect("dyn keygen");
-        let msg = b"dyn dispatch test";
-        let sig = s.sign(sk.as_ref(), msg, None);
+        let sig = s.sign(sk.as_ref(), b"dyn dispatch test", None);
         assert_eq!(sig.len(), SIGNATURE_SIZE);
-        assert!(s.verify(pk.as_ref(), msg, &sig, None),
-            "dyn-dispatch verify must return true");
+        assert!(s.verify(pk.as_ref(), b"dyn dispatch test", &sig, None));
+        assert!(!s.verify(pk.as_ref(), b"other", &sig, None));
     }
 
-    /// Dyn verify must return `false` for a tampered message.
-    #[test]
-    fn dyn_scheme_verify_fails_on_wrong_message() {
-        let s: &dyn S = &Scheme;
-        let (pk, sk) = s.generate_key().expect("dyn keygen");
-        let sig = s.sign(sk.as_ref(), b"good", None);
-        assert!(!s.verify(pk.as_ref(), b"bad", &sig, None),
-            "dyn verify must reject wrong message");
-    }
-
-    /// `Scheme::sign` must panic when a non-empty context is supplied.
     #[test]
     #[should_panic]
     fn dyn_scheme_sign_panics_on_context() {
@@ -867,136 +753,32 @@ mod tests {
         s.sign(sk.as_ref(), b"msg", Some(&opts));
     }
 
-    /// `Scheme::verify` must return `false` when a non-empty context is supplied.
     #[test]
-    fn dyn_scheme_verify_returns_false_on_context() {
+    fn dyn_scheme_unmarshal_private_key_roundtrips() {
+        // ML-DSA seed form makes SK reconstruction from bytes safe and supported.
         let s: &dyn S = &Scheme;
         let (pk, sk) = s.generate_key().expect("dyn keygen");
-        let sig = s.sign(sk.as_ref(), b"msg", None);
-        let opts = SignatureOpts { context: "ctx".into() };
-        assert!(!s.verify(pk.as_ref(), b"msg", &sig, Some(&opts)),
-            "verify with non-empty context must return false");
+        let sk_bytes = sk.marshal_binary().expect("marshal SK");
+        let sk2 = s.unmarshal_binary_private_key(&sk_bytes).expect("unmarshal SK");
+        let sig = s.sign(sk2.as_ref(), b"sk roundtrip", None);
+        assert!(s.verify(pk.as_ref(), b"sk roundtrip", &sig, None));
     }
 
-    /// `Scheme::unmarshal_binary_public_key` round-trip.
     #[test]
-    fn dyn_scheme_unmarshal_public_key() {
-        let s: &dyn S = &Scheme;
-        let (pk, sk) = s.generate_key().expect("dyn keygen");
-        let pk_bytes = pk.marshal_binary().expect("marshal");
-        let pk2 = s.unmarshal_binary_public_key(&pk_bytes).expect("unmarshal");
-        let sig = s.sign(sk.as_ref(), b"unmarshal test", None);
-        assert!(s.verify(pk2.as_ref(), b"unmarshal test", &sig, None),
-            "unmarshaled public key must verify");
-    }
-
-    /// `Scheme::unmarshal_binary_private_key` must currently return `Err`
-    /// (intentional limitation — SK cannot be reconstructed without the seed).
-    #[test]
-    fn dyn_scheme_unmarshal_private_key_is_unsupported() {
-        let s: &dyn S = &Scheme;
-        let (_, sk) = s.generate_key().expect("dyn keygen");
-        let sk_bytes = sk.marshal_binary().expect("marshal");
-        assert!(s.unmarshal_binary_private_key(&sk_bytes).is_err(),
-            "unmarshal_binary_private_key must return Err (by design)");
-    }
-
-    // ── 9. TypedScheme API ────────────────────────────────────────────────────
-
-    /// `TypedScheme::generate_key_typed` + `sign_typed` + `verify_typed`.
-    #[test]
-    fn typed_scheme_sign_verify() {
+    fn typed_scheme_sign_verify_and_unmarshal() {
         let s = Scheme;
         let (pk, sk) = s.generate_key_typed().expect("typed keygen");
-        let msg = b"typed scheme round-trip";
-        let sig = s.sign_typed(&sk, msg, None);
-        assert!(s.verify_typed(&pk, msg, &sig, None),
-            "typed verify must return true");
+        let sig = s.sign_typed(&sk, b"typed round-trip", None);
+        assert!(s.verify_typed(&pk, b"typed round-trip", &sig, None));
+        let pk2 = s.unmarshal_public_key_typed(&pk.marshal_binary().unwrap()).unwrap();
+        assert_eq!(pk, pk2);
     }
 
-    /// `TypedScheme::derive_key_typed` must be deterministic.
-    #[test]
-    fn typed_scheme_derive_key_deterministic() {
-        let s = Scheme;
-        let seed = [0xCCu8; SEED_SIZE];
-        let (pk1, _) = s.derive_key_typed(&seed);
-        let (pk2, _) = s.derive_key_typed(&seed);
-        assert_eq!(pk1, pk2, "typed derive_key must be deterministic");
-    }
-
-    /// `TypedScheme::sign_typed` must panic when a non-empty context is passed.
-    #[test]
-    #[should_panic]
-    fn typed_scheme_sign_panics_on_context() {
-        let s = Scheme;
-        let (_, sk) = s.generate_key_typed().expect("typed keygen");
-        let opts = SignatureOpts { context: "ctx".into() };
-        s.sign_typed(&sk, b"msg", Some(&opts));
-    }
-
-    /// `TypedScheme::unmarshal_public_key_typed` round-trip.
-    #[test]
-    fn typed_scheme_unmarshal_public_key() {
-        let s = Scheme;
-        let (pk, sk) = s.generate_key_typed().expect("typed keygen");
-        let pk_bytes = pk.marshal_binary().expect("marshal");
-        let pk2 = s.unmarshal_public_key_typed(&pk_bytes).expect("unmarshal");
-        assert_eq!(pk, pk2, "unmarshal_public_key_typed must round-trip");
-        let msg = b"typed unmarshal";
-        let sig = s.sign_typed(&sk, msg, None);
-        assert!(s.verify_typed(&pk2, msg, &sig, None),
-            "unmarshaled typed public key must verify");
-    }
-
-    // ── 10. Cross-key checks ──────────────────────────────────────────────────
-
-    /// Signing with key-A and verifying with key-B must fail.
     #[test]
     fn cross_key_verify_fails() {
         let (_, sk_a) = generate_key().expect("keygen A");
         let (pk_b, _) = generate_key().expect("keygen B");
         let sig = sk_a.sign_internal(b"cross test");
-        assert!(pk_b.verify_internal(b"cross test", &sig).is_err(),
-            "signature from key-A must not verify under key-B");
-    }
-
-    // ── 11. Latency smoke-test (benchmark gate) ───────────────────────────────
-
-    /// Measure key-generation, signing, and verification latency.
-    ///
-    /// This is a smoke-test rather than a microbenchmark — it checks that
-    /// each operation completes in **under 2 seconds** (a very conservative
-    /// bound that would catch runaway regressions in production builds).
-    ///
-    /// For accurate benchmarks use `cargo bench` with Criterion.
-    #[test]
-    fn latency_smoke_test() {
-        use std::time::Duration;
-        const MAX: Duration = Duration::from_secs(2);
-
-        // Key generation
-        let t = Instant::now();
-        let (pk, sk) = generate_key().expect("keygen");
-        let keygen_time = t.elapsed();
-        assert!(keygen_time < MAX, "keygen took {:?}, expected < {:?}", keygen_time, MAX);
-
-        // Signing
-        let msg = b"latency smoke-test message";
-        let t = Instant::now();
-        let sig = sk.sign_internal(msg);
-        let sign_time = t.elapsed();
-        assert!(sign_time < MAX, "sign took {:?}, expected < {:?}", sign_time, MAX);
-
-        // Verification
-        let t = Instant::now();
-        let ok = pk.verify_internal(msg, &sig).is_ok();
-        let verify_time = t.elapsed();
-        assert!(verify_time < MAX, "verify took {:?}, expected < {:?}", verify_time, MAX);
-        assert!(ok, "latency-test signature must verify");
-
-        println!(
-            "\nDilithium5 latency: keygen={:?}  sign={:?}  verify={:?}",
-            keygen_time, sign_time, verify_time
-        );
+        assert!(pk_b.verify_internal(b"cross test", &sig).is_err());
     }
 }

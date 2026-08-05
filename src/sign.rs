@@ -156,7 +156,7 @@ pub trait PrivateKey: Send + Sync + fmt::Debug {
 /// > `Result`-returning methods: [`crate::transaction::types::BlackChainTxType::sign_transaction`]
 /// > and [`crate::transaction::types::BlackChainTxType::recover_sender`].
 pub trait Scheme: Send + Sync {
-    /// Name of the scheme, e.g. `"Ed448"` or `"Dilithium5"`.
+    /// Name of the scheme, e.g. `"Ed448"` or `"ML-DSA-87"`.
     fn name(&self) -> &'static str;
 
     // -----------------------------------------------------------------------

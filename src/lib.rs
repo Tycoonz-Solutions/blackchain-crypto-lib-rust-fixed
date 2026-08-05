@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+#[cfg(test)]
+mod attack_vectors;
 pub mod crypto;
 pub mod dilithium;
 pub mod error;

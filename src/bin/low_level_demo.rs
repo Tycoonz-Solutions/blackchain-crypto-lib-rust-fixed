@@ -66,10 +66,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -------------------------------------------------------------------------
     println!("\n[STEP 4] Partitioning Child Seed for Hybrid Algorithm Suite...");
 
-    // First 32 bytes (0..32): Dilithium5 seed
+    // First 32 bytes (0..32): ML-DSA-87 seed
     let mut dil_seed = [0u8; DIL_SEED_SIZE];
     dil_seed.copy_from_slice(&child_seed[..DIL_SEED_SIZE]);
-    println!("  - Dilithium5 Seed (Bytes 0..32 - 32 bytes):");
+    println!("  - ML-DSA-87 Seed (Bytes 0..32 - 32 bytes):");
     println!("    0x{}", hex::encode(dil_seed));
 
     // Next 16 bytes (32..48): mdECC Master Seed
@@ -83,9 +83,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    0x{}", hex::encode(chain_code));
 
     // -------------------------------------------------------------------------
-    // Step 5: Sub-Key Generation - Dilithium5 (Post-Quantum)
+    // Step 5: Sub-Key Generation - ML-DSA-87 (Post-Quantum)
     // -------------------------------------------------------------------------
-    println!("\n[STEP 5] Generating Dilithium5 Keypair (Post-Quantum Lattice Signature)...");
+    println!("\n[STEP 5] Generating ML-DSA-87 Keypair (Post-Quantum Lattice Signature)...");
     let (dil_pk, dil_sk) = dil_key_from_seed(&dil_seed);
 
     let mut dil_pk_buf = [0u8; DIL_PK_SIZE];
@@ -94,12 +94,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     dil_sk.pack(&mut dil_sk_buf);
 
     println!(
-        "  Dilithium5 Public Key ({} bytes, Prefix): 0x{}",
+        "  ML-DSA-87 Public Key ({} bytes, Prefix): 0x{}",
         DIL_PK_SIZE,
         hex::encode(&dil_pk_buf[..32])
     );
     println!(
-        "  Dilithium5 Private Key ({} bytes, Prefix): 0x{}",
+        "  ML-DSA-87 Private Key ({} bytes, Prefix): 0x{}",
         DIL_SK_SIZE,
         hex::encode(&dil_sk_buf[..32])
     );
@@ -247,10 +247,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -------------------------------------------------------------------------
     println!("\n[STEP 11] Signing Messages with Sub-keys...");
 
-    // 1. Dilithium5 signs transaction hash H directly
-    println!("  - Signing transaction hash H with Dilithium5...");
+    // 1. ML-DSA-87 signs transaction hash H directly
+    println!("  - Signing transaction hash H with ML-DSA-87...");
     let dil_sig = dil_sk.sign_internal(&tx_hash);
-    println!("    Dilithium5 Signature length: {} bytes", dil_sig.len());
+    println!("    ML-DSA-87 Signature length: {} bytes", dil_sig.len());
 
     // 2. P-521 signs (H ‖ H_combined ‖ CURVE_ID_P521)
     println!("  - Signing (H ‖ H_combined ‖ P-521_ID) with P-521...");
@@ -332,7 +332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rx_ed448_sig = &composite_signature[rx_ed448_sig_offset..];
 
     println!(
-        "    Sliced Dilithium5 signature length: {} bytes",
+        "    Sliced ML-DSA-87 signature length: {} bytes",
         rx_dil_sig.len()
     );
     println!(
@@ -344,11 +344,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rx_ed448_sig.len()
     );
 
-    // 1. Verify Dilithium5
+    // 1. Verify ML-DSA-87
     println!("  Verifying sub-signatures...");
     let parsed_dil_pk = DilPublicKey::from_bytes(rx_dil_pk_bytes)?;
     parsed_dil_pk.verify_internal(&tx_hash, rx_dil_sig)?;
-    println!("    [Dilithium5] Signature is VALID.");
+    println!("    [ML-DSA-87] Signature is VALID.");
 
     // 2. Verify P-521
     let parsed_p521_pk = P521PublicKey::from_bytes(rx_p521_pk_bytes)?;

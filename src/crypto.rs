@@ -1,12 +1,12 @@
 // crypto.rs — Composite BlackChain key types.
 //
 // Implements the three-algorithm hybrid key used by the BlackChain protocol:
-//   - Dilithium5  (post-quantum lattice signature)
+//   - ML-DSA-87  (post-quantum lattice signature)
 //   - P-521 ECDSA (classical elliptic-curve signature)
 //   - Ed448       (classical twisted-Edwards signature)
 //
 // Key derivation from the 64-byte BIP-39 root seed:
-//   seed[0..32]  → Dilithium5 seed (256 bits)
+//   seed[0..32]  → ML-DSA-87 seed (256 bits)
 //   seed[32..48] → mdECC master seed → per-curve via SHAKE256 + HKDF-SHA3-512
 //   seed[48..64] → chain code / reserved
 //
@@ -20,7 +20,6 @@ use sha3::{Digest, Keccak256, Shake256};
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
-use crystals_dilithium::dilithium5 as d5;
 
 use crate::dilithium::{
     new_key_from_seed as dil_key_from_seed, SEED_SIZE as DIL_SEED,
@@ -51,16 +50,16 @@ pub const ALGO_ID: u8 = 1;
 pub const VERSION: u8 = 1;
 
 /// Total bytes required for the composite public key in serialized form:
-///   Dilithium5 pk (2592) ‖ P-521 pk (133) ‖ Ed448 pk (57)
+///   ML-DSA-87 pk (2592) ‖ P-521 pk (133) ‖ Ed448 pk (57)
 pub const COMPOSITE_PK_SIZE: usize = DIL_PK_SIZE + P521_PK_SIZE + ED448_PK_SIZE;
 
 // ---------------------------------------------------------------------------
 // BlackChainPublicKey
 // ---------------------------------------------------------------------------
 
-/// The composite BlackChain public key (Dilithium5 + P-521 + Ed448).
+/// The composite BlackChain public key (ML-DSA-87 + P-521 + Ed448).
 ///
-/// Serialized as `[Dilithium5 pk (2592 B)] ‖ [P-521 pk (133 B)] ‖ [Ed448 pk (57 B)]`.
+/// Serialized as `[ML-DSA-87 pk (2592 B)] ‖ [P-521 pk (133 B)] ‖ [Ed448 pk (57 B)]`.
 #[derive(Serialize, Deserialize, Clone, Zeroize)]
 pub struct BlackChainPublicKey {
     dilithium: Vec<u8>,
@@ -69,7 +68,7 @@ pub struct BlackChainPublicKey {
 }
 
 impl BlackChainPublicKey {
-    /// Returns the raw Dilithium5 public key bytes.
+    /// Returns the raw ML-DSA-87 public key bytes.
     pub fn dilithium_bytes(&self) -> &[u8] {
         &self.dilithium
     }
@@ -84,7 +83,7 @@ impl BlackChainPublicKey {
         &self.ed448
     }
 
-    /// Serialises to `[Dilithium5 pk] ‖ [P-521 pk] ‖ [Ed448 pk]`.
+    /// Serialises to `[ML-DSA-87 pk] ‖ [P-521 pk] ‖ [Ed448 pk]`.
     ///
     /// This byte format is also stored in the `pub_key` field of a signed
     /// `BlackChainTxType` and is required for `recover_sender`.
@@ -171,13 +170,13 @@ impl BlackChainPublicKey {
         let p521_sig = &signature[dil_sig_len..dil_sig_len + p521_sig_len];
         let ed448_sig = &signature[dil_sig_len + p521_sig_len..];
 
-        // ── Verify Dilithium5 ──
+        // ── Verify ML-DSA-87 ──
         let dil_pk = DilPublicKey::from_bytes(self.dilithium_bytes()).map_err(|e| {
-            CryptoError::SignatureError(format!("Dilithium5 public key parse error: {e}"))
+            CryptoError::SignatureError(format!("ML-DSA-87 public key parse error: {e}"))
         })?;
         dil_pk
             .verify_internal(&hash, dil_sig)
-            .map_err(|e| CryptoError::SignatureError(format!("Dilithium5 verification failed: {e}")))?;
+            .map_err(|e| CryptoError::SignatureError(format!("ML-DSA-87 verification failed: {e}")))?;
 
         // ── Verify P-521 ──
         let p521_msg: Vec<u8> = [&hash[..], &h_combined, &[CURVE_ID_P521]].concat();
@@ -215,7 +214,7 @@ impl fmt::Debug for BlackChainPublicKey {
 // BlackChainPrivateKey
 // ---------------------------------------------------------------------------
 
-/// The composite BlackChain private key (Dilithium5 + P-521 + Ed448).
+/// The composite BlackChain private key (ML-DSA-87 + P-521 + Ed448).
 ///
 /// All fields are private and zeroed on drop.  Use accessor methods for
 /// read-only access to raw key bytes.
@@ -234,7 +233,7 @@ pub struct BlackChainPrivateKey {
 }
 
 impl BlackChainPrivateKey {
-    /// Returns the raw Dilithium5 secret key bytes (4000 bytes).
+    /// Returns the raw 32-byte ML-DSA-87 seed (the stored secret-key form).
     pub fn dilithium_bytes(&self) -> &[u8] {
         &self.dilithium
     }
@@ -266,7 +265,7 @@ impl BlackChainPrivateKey {
     ///
     /// Seed layout:
     /// ```text
-    /// seed[0..32]  → Dilithium5 seed
+    /// seed[0..32]  → ML-DSA-87 seed
     /// seed[32..48] → mdECC master → per-curve via SHAKE256 + HKDF-SHA3-512
     /// seed[48..64] → chain code (reserved)
     /// ```
@@ -281,7 +280,7 @@ impl BlackChainPrivateKey {
             ));
         }
 
-        // ── Dilithium5 ────────────────────────────────────────────────────────
+        // ── ML-DSA-87 ────────────────────────────────────────────────────────
         // Deterministic from the first 32 bytes of the seed.
         let mut dil_seed = Zeroizing::new([0u8; DIL_SEED]);
         dil_seed.copy_from_slice(&seed[..DIL_SEED]);
@@ -300,11 +299,11 @@ impl BlackChainPrivateKey {
         let ed448_seed = Zeroizing::new(derive_mdecc_curve_seed(mdecc_seed, CURVE_ID_ED448, ED448_SEED)?);
         let (ed448_pk, ed448_sk) = ed448_key_from_seed(&ed448_seed);
 
-        // Dilithium5 SK: pack() into a fixed array
+        // ML-DSA-87 SK: pack() into a fixed array
         let mut dil_sk_buf = Zeroizing::new([0u8; DIL_SK_SIZE]);
         dil_sk.pack(&mut dil_sk_buf);
 
-        // Dilithium5 PK: pack() into a fixed array
+        // ML-DSA-87 PK: pack() into a fixed array
         let mut dil_pk_buf = [0u8; DIL_PK_SIZE];
         dil_pk.pack(&mut dil_pk_buf);
 
@@ -356,7 +355,7 @@ impl BlackChainPrivateKey {
     /// Signs any general message byte slice using the composite post-quantum hybrid scheme.
     ///
     /// Under the hood, this uses a cross-algorithm entanglement hash (`h_combined`)
-    /// over a zeroed 16-byte nonce to bind the Dilithium5, NIST P-521, and Ed448
+    /// over a zeroed 16-byte nonce to bind the ML-DSA-87, NIST P-521, and Ed448
     /// signatures together, guaranteeing message integrity and signature non-splicibility.
     ///
     /// # Errors
@@ -375,14 +374,10 @@ impl BlackChainPrivateKey {
         let mut h_combined = [0u8; 32];
         shake.finalize_xof().read(&mut h_combined);
 
-        // ── Dilithium5 signature (raw hash) ──
-        let dil_sk_bytes = self.dilithium_bytes();
-        let mut dil_sk_buf = Zeroizing::new([0u8; crate::dilithium::PRIVATE_KEY_SIZE]);
-        dil_sk_buf.copy_from_slice(dil_sk_bytes);
-        let dil_inner = d5::SecretKey::from_bytes(&*dil_sk_buf).map_err(|e| {
-            CryptoError::SignatureError(format!("Dilithium5 key parse failed: {e:?}"))
-        })?;
-        let dil_sig = dil_inner.sign(&hash).to_vec();
+        // ── ML-DSA-87 signature (raw hash) ──
+        let dil_sk = crate::dilithium::PrivateKey::from_bytes(self.dilithium_bytes())
+            .map_err(|e| CryptoError::SignatureError(format!("ML-DSA-87 key parse failed: {e}")))?;
+        let dil_sig = dil_sk.sign_internal(&hash);
 
         // ── P-521 signature (H ‖ h_combined ‖ curve_id) ──
         let p521_msg: Vec<u8> = [&hash[..], &h_combined, &[CURVE_ID_P521]].concat();
@@ -427,7 +422,7 @@ mod golden_tests {
     }
 
     /// Golden-vector regression lock for the deterministic derivation pipeline
-    /// (seed → Dilithium5 / P-521 / Ed448 sub-keys → composite address).
+    /// (seed → ML-DSA-87 / P-521 / Ed448 sub-keys → composite address).
     ///
     /// NOTE: these expected values were generated by this implementation itself —
     /// they pin behavior so accidental changes to the KDF, seed layout, or
@@ -447,10 +442,10 @@ mod golden_tests {
 
         // Locked expected outputs (regenerate + update deliberately if the
         // derivation protocol ever intentionally changes).
-        const EXPECTED_ADDRESS: &str = "4a726e875d991421c5c0256561450bce3708f6f2";
+        const EXPECTED_ADDRESS: &str = "890a83d1a884667611d72e91c85f37c9a4f0baaa";
         const EXPECTED_ED448_PK: &str = "e63fb7e69d78bc7cfddbd03cae79bc470a14605a2254f50181b09d63b0a24be38c5e1d3f330c7383b4e29aff9f06968976bb0038f321ad5780";
         const EXPECTED_P521_PK_HEAD: &str = "040080cc3e42ad3101a3c71e04f4b4ae";
-        const EXPECTED_DIL_PK_HEAD: &str = "0a9d9df366d4822b1b23ec9c3d70c00b";
+        const EXPECTED_DIL_PK_HEAD: &str = "e3d83ad7a5d3463bc535f46168547e06";
 
         let addr = hex::encode(pub_key.derive_address().as_slice());
         let ed448 = hex::encode(pub_key.ed448_bytes());
@@ -465,7 +460,7 @@ mod golden_tests {
         assert_eq!(addr, EXPECTED_ADDRESS, "address derivation changed");
         assert_eq!(ed448, EXPECTED_ED448_PK, "Ed448 sub-key derivation changed");
         assert_eq!(p521_head, EXPECTED_P521_PK_HEAD, "P-521 sub-key derivation changed");
-        assert_eq!(dil_head, EXPECTED_DIL_PK_HEAD, "Dilithium5 sub-key derivation changed");
+        assert_eq!(dil_head, EXPECTED_DIL_PK_HEAD, "ML-DSA-87 sub-key derivation changed");
     }
 }
 

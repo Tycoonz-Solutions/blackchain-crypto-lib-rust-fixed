@@ -1,12 +1,12 @@
-use blackchain_crypto_lib_rust::dilithium::{generate_key, scheme, DilithiumScheme};
+use blackchain_crypto_lib_rust::dilithium::{generate_key, scheme, MlDsaScheme};
 use blackchain_crypto_lib_rust::sign::{Scheme, TypedScheme, PublicKey as SignPub, PrivateKey as SignPriv};
 
 fn main() {
-    println!("=== Testing Dilithium5 Production Implementation ===\n");
-    let dil_scheme = DilithiumScheme {};
+    println!("=== Testing ML-DSA-87 Production Implementation ===\n");
+    let dil_scheme = MlDsaScheme {};
 
     // 1. Generate normal keys
-    println!("1. Generating Dilithium5 keys...");
+    println!("1. Generating ML-DSA-87 keys...");
     let (pk, sk) = generate_key().expect("Failed to generate keys");
 
     let pk_bytes = pk.marshal_binary().unwrap();
@@ -22,7 +22,7 @@ fn main() {
     println!("   Unmarshalled public key bytes match: {}", pk2.marshal_binary().unwrap() == pk_bytes);
 
     // 2. Sign a message
-    let message = b"Hello from Blackchain PQC via Dilithium5!";
+    let message = b"Hello from Blackchain PQC via ML-DSA-87!";
     println!("\n2. Signing message: {:?}", String::from_utf8_lossy(message));
     let signature = sk.sign_internal(message);
     println!("   Signature length: {} bytes", signature.len());
@@ -66,5 +66,5 @@ fn main() {
         println!("   ❌ Dynamic Scheme sign/verify FAILED!");
     }
 
-    println!("\n=== All Dilithium5 Tests Completed Successfully! ===");
+    println!("\n=== All ML-DSA-87 Tests Completed Successfully! ===");
 }

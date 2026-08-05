@@ -6,7 +6,7 @@
 //
 //  1. entg_nonce = SHAKE256("entangle" ‖ ALGO_ID ‖ VERSION ‖ address)[0..16]
 //  2. h_combined = SHAKE256(dil_pk ‖ p521_pk ‖ ed448_pk ‖ entg_nonce)[0..32]
-//  3. dil_sig    = Dilithium5.sign(H)
+//  3. dil_sig    = ML-DSA-87.sign(H)
 //  4. p521_sig   = P-521.sign(H ‖ h_combined ‖ CURVE_ID_P521)
 //  5. ed448_sig  = Ed448.sign(H ‖ h_combined ‖ CURVE_ID_ED448)
 //  6. composite  = dil_sig ‖ p521_sig ‖ ed448_sig
@@ -22,7 +22,6 @@
 //  4. Return Keccak256(dil_pk ‖ p521_pk ‖ ed448_pk)[12..] as the address
 
 use alloy_primitives::{Address, Bytes, U256};
-use crystals_dilithium::dilithium5 as d5;
 use sha3::{
     digest::{ExtendableOutput, Update, XofReader},
     Shake256,
@@ -40,13 +39,13 @@ use crate::transaction::types::BlackChainTxType;
 // Composite signature layout constants
 // ---------------------------------------------------------------------------
 
-/// Size of a Dilithium5 signature (bytes).
+/// Size of a ML-DSA-87 signature (bytes).
 pub const DIL_SIG_BYTES: usize = DIL_SIG_SIZE;
 /// Size of a P-521 ECDSA signature (fixed-width `r ‖ s`).
 pub const P521_SIG_BYTES: usize = P521_SIG_LEN;
 /// Size of an Ed448 signature.
 pub const ED448_SIG_BYTES: usize = 114;
-/// Exact composite signature size: `Dilithium5 ‖ P-521 ‖ Ed448`.
+/// Exact composite signature size: `ML-DSA-87 ‖ P-521 ‖ Ed448`.
 ///
 /// Every sub-signature is fixed-width, so a well-formed composite signature has
 /// exactly this length.
@@ -138,25 +137,20 @@ impl BlackChainTxType {
         let entg_nonce = compute_entanglement_nonce(self.chain_id, &address);
         let h_combined = compute_h_combined(pub_key, &entg_nonce);
 
-        // ── Dilithium5 signature (raw hash) ───────────────────────────────
-        // Use crystals_dilithium directly to avoid the PrivateKey roundtrip
-        // limitation (PrivateKey::from_bytes is intentionally disabled).
+        // ── ML-DSA-87 signature (raw hash) ────────────────────────────────
+        // The stored secret is the 32-byte seed; `from_bytes` re-expands the
+        // full ML-DSA-87 signing key from it.
         let dil_sk_bytes = key.dilithium_bytes();
         if dil_sk_bytes.len() != crate::dilithium::PRIVATE_KEY_SIZE {
             return Err(CryptoError::SignatureError(format!(
-                "Dilithium5 secret key has wrong size: expected {}, got {}",
+                "ML-DSA-87 seed has wrong size: expected {}, got {}",
                 crate::dilithium::PRIVATE_KEY_SIZE,
                 dil_sk_bytes.len()
             )));
         }
-        use zeroize::Zeroizing;
-
-        let mut dil_sk_buf = Zeroizing::new([0u8; crate::dilithium::PRIVATE_KEY_SIZE]);
-        dil_sk_buf.copy_from_slice(dil_sk_bytes);
-        let dil_inner = d5::SecretKey::from_bytes(&*dil_sk_buf).map_err(|e| {
-            CryptoError::SignatureError(format!("Dilithium5 key parse failed: {e:?}"))
-        })?;
-        let dil_sig = dil_inner.sign(&hash).to_vec();
+        let dil_sk = crate::dilithium::PrivateKey::from_bytes(dil_sk_bytes)
+            .map_err(|e| CryptoError::SignatureError(format!("ML-DSA-87 key parse failed: {e}")))?;
+        let dil_sig = dil_sk.sign_internal(&hash);
 
         // ── P-521 signature (H ‖ h_combined ‖ curve_id) ──────────────────
         let p521_msg: Vec<u8> = [hash.as_slice(), &h_combined, &[CURVE_ID_P521]].concat();
@@ -239,13 +233,13 @@ pub fn verify_signature(
     let p521_sig = &pqc_sig[DIL_SIG_BYTES..DIL_SIG_BYTES + P521_SIG_BYTES];
     let ed448_sig = &pqc_sig[DIL_SIG_BYTES + P521_SIG_BYTES..];
 
-    // Verify Dilithium5
+    // Verify ML-DSA-87
     let dil_pk = DilPublicKey::from_bytes(pub_key.dilithium_bytes()).map_err(|e| {
-        CryptoError::SignatureError(format!("Dilithium5 public key parse error: {e}"))
+        CryptoError::SignatureError(format!("ML-DSA-87 public key parse error: {e}"))
     })?;
     dil_pk
         .verify_internal(tx_hash, dil_sig)
-        .map_err(|e| CryptoError::SignatureError(format!("Dilithium5 verification failed: {e}")))?;
+        .map_err(|e| CryptoError::SignatureError(format!("ML-DSA-87 verification failed: {e}")))?;
 
     // Verify P-521
     let p521_msg: Vec<u8> = [tx_hash.as_slice(), &h_combined, &[CURVE_ID_P521]].concat();
