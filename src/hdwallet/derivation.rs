@@ -4,7 +4,7 @@
 //
 // ## mdECC per-curve seed derivation
 //
-// Given the 16-byte mdECC master seed (bytes 32..48 of the BIP-39 root seed)
+// Given the 32-byte mdECC master seed (bytes 32..64 of the BIP-39 root seed)
 // and a curve identifier byte, produces a cryptographically independent seed
 // of the requested length:
 //
@@ -49,10 +49,10 @@ pub const CURVE_ID_ED448: u8 = 2;
 // ---------------------------------------------------------------------------
 
 /// Derives a cryptographically independent per-curve seed from the master
-/// mdECC seed (16 bytes, taken from bytes 32..48 of the BIP-39 root seed).
+/// mdECC seed (32 bytes, taken from bytes 32..64 of the BIP-39 root seed).
 ///
 /// # Arguments
-/// - `mdecc_seed` — the 16-byte mdECC master slice.
+/// - `mdecc_seed` — the 32-byte mdECC master slice.
 /// - `curve_id`   — one of `CURVE_ID_P521` or `CURVE_ID_ED448`.
 /// - `seed_size`  — how many output bytes are needed by the target curve.
 ///

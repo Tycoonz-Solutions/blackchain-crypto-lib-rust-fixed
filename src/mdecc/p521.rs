@@ -618,6 +618,121 @@ mod tests {
         }
     }
 
+    /// Authoritative NIST FIPS 186-4 ECDSA verification KAT (P-521, SHA-512).
+    ///
+    /// Vectors are the first three entries from NIST's `SigGen.txt`
+    /// (`186-4ecdsatestvectors.zip`, CAVP), where `m` is the SHA-512 prehash of
+    /// the original message. This proves two things against an external
+    /// authority: (1) our public-key deserialiser accepts genuine NIST P-521
+    /// keys and round-trips them canonically, and (2) the ECDSA verification
+    /// equation our wrapper relies on accepts NIST-issued signatures and
+    /// rejects a tampered prehash.
+    #[test]
+    fn p521_fips186_4_verify_kat() {
+        use p521::ecdsa::signature::hazmat::PrehashVerifier;
+        use p521::ecdsa::{Signature, VerifyingKey};
+
+        struct Vector {
+            m: &'static str,
+            qx: &'static str,
+            qy: &'static str,
+            r: &'static str,
+            s: &'static str,
+        }
+
+        // NIST FIPS 186-4, P-521 / SHA-512, SigGen.txt (first three vectors).
+        let vectors = [
+            Vector {
+                m: "000065f83408092261bda599389df03382c5be01a81fe00a36f3f4bb6541263f801627c440e50809712b0cace7c217e6e5051af81de9bfec3204dcd63c4f9a741047",
+                qx: "0061387fd6b95914e885f912edfbb5fb274655027f216c4091ca83e19336740fd81aedfe047f51b42bdf68161121013e0d55b117a14e4303f926c8debb77a7fdaad1",
+                qy: "00e7d0c75c38626e895ca21526b9f9fdf84dcecb93f2b233390550d2b1463b7ee3f58df7346435ff0434199583c97c665a97f12f706f2357da4b40288def888e59e6",
+                r: "004de826ea704ad10bc0f7538af8a3843f284f55c8b946af9235af5af74f2b76e099e4bc72fd79d28a380f8d4b4c919ac290d248c37983ba05aea42e2dd79fdd33e8",
+                s: "0087488c859a96fea266ea13bf6d114c429b163be97a57559086edb64aed4a18594b46fb9efc7fd25d8b2de8f09ca0587f54bd287299f47b2ff124aac566e8ee3b43",
+            },
+            Vector {
+                m: "0000a6200971c6a289e2fcb80f78ec08a5079ea2675efd68bcab479552aa5bcb8edf3c993c79d7cebcc23c20e5af41723052b871134cc71d5c57206182a7068cc39b",
+                qx: "004d5c8afee038984d2ea96681ec0dccb6b52dfa4ee2e2a77a23c8cf43ef19905a34d6f5d8c5cf0981ed804d89d175b17d1a63522ceb1e785c0f5a1d2f3d15e51352",
+                qy: "0014368b8e746807b2b68f3615cd78d761a464ddd7918fc8df51d225962fdf1e3dc243e265100ff0ec133359e332e44dd49afd8e5f38fe86133573432d33c02fa0a3",
+                r: "01a3c4a6386c4fb614fba2cb9e74201e1aaa0001aa931a2a939c92e04b8344535a20f53c6e3c69c75c2e5d2fe3549ed27e6713cb0f4a9a94f6189eb33bff7d453fce",
+                s: "016a997f81aa0bea2e1469c8c1dab7df02a8b2086ba482c43af04f2174831f2b1761658795adfbdd44190a9b06fe10e578987369f3a2eced147cff89d8c2818f7471",
+            },
+            Vector {
+                m: "000046ff533622cc90321a3aeb077ec4db4fbf372c7a9db48b59de7c5d59e6314110676ba5491bd20d0f02774eef96fc2e88ca99857d21ef255184c93fb1ff4f01d3",
+                qx: "00c2d540a7557f4530de35bbd94da8a6defbff783f54a65292f8f76341c996cea38795805a1b97174a9147a8644282e0d7040a6f83423ef2a0453248156393a1782e",
+                qy: "0119f746c5df8cec24e4849ac1870d0d8594c799d2ceb6c3bdf891dfbd2242e7ea24d6aec3166214734acc4cbf4da8f71e2429c5c187b2b3a048527c861f58a9b97f",
+                r: "010ed3ab6d07a15dc3376494501c27ce5f78c8a2b30cc809d3f9c3bf1aef437e590ef66abae4e49065ead1af5f752ec145acfa98329f17bca9991a199579c41f9229",
+                s: "008c3457fe1f93d635bb52df9218bf3b49a7a345b8a8a988ac0a254340546752cddf02e6ce47eee58ea398fdc9130e55a4c09f5ae548c715f5bcd539f07a34034d78",
+            },
+        ];
+
+        for (i, v) in vectors.iter().enumerate() {
+            let qx = hex::decode(v.qx).unwrap();
+            let qy = hex::decode(v.qy).unwrap();
+            let m = hex::decode(v.m).unwrap();
+            let r = hex::decode(v.r).unwrap();
+            let s = hex::decode(v.s).unwrap();
+
+            // (1) Our deserialiser must accept the NIST public key (SEC1
+            //     uncompressed: 0x04 ‖ x ‖ y) and re-encode it identically.
+            let mut sec1 = Vec::with_capacity(PUBLIC_KEY_SIZE);
+            sec1.push(0x04);
+            sec1.extend_from_slice(&qx);
+            sec1.extend_from_slice(&qy);
+            assert_eq!(sec1.len(), PUBLIC_KEY_SIZE);
+            let ours = P521PublicKey::from_bytes(&sec1)
+                .unwrap_or_else(|e| panic!("vector {i}: from_bytes rejected a valid NIST key: {e:?}"));
+            assert_eq!(ours.as_bytes(), sec1, "vector {i}: non-canonical re-encoding");
+
+            // (2) The ECDSA verification equation must accept the NIST signature
+            //     against the SHA-512 prehash, and reject a tampered prehash.
+            let vk = VerifyingKey::from_sec1_bytes(&sec1).expect("valid NIST key");
+            let mut sig_bytes = Vec::with_capacity(SIGNATURE_SIZE);
+            sig_bytes.extend_from_slice(&r);
+            sig_bytes.extend_from_slice(&s);
+            let sig = Signature::from_slice(&sig_bytes).expect("valid NIST signature");
+            assert!(
+                vk.verify_prehash(&m, &sig).is_ok(),
+                "vector {i}: NIST signature failed to verify"
+            );
+
+            let mut bad_m = m.clone();
+            bad_m[0] ^= 0x01;
+            assert!(
+                vk.verify_prehash(&bad_m, &sig).is_err(),
+                "vector {i}: tampered prehash must not verify"
+            );
+        }
+    }
+
+    /// End-to-end low-S enforcement: a mathematically valid but malleated
+    /// high-S signature `(r, n − s)` must be rejected by `verify_sig`, even
+    /// though standard ECDSA would accept it. This is the malleability guard
+    /// that keeps signatures non-malleable on the wire.
+    #[test]
+    fn verify_rejects_malleated_high_s() {
+        use p521::Scalar;
+        use p521::ecdsa::Signature;
+
+        let (pk, sk) = generate_key().expect("keygen");
+        let msg = b"low-s malleability guard";
+        let sig = sk.sign_msg(msg); // our signer always emits low-S
+        assert!(pk.verify_sig(msg, &sig).is_ok(), "low-S signature must verify");
+
+        // Construct the high-S twin (r, n − s).
+        let parsed = Signature::from_slice(&sig).expect("parse our signature");
+        let (r, s) = parsed.split_scalars();
+        let s_neg: Scalar = -(*s);
+        let high = Signature::from_scalars(r.to_bytes(), s_neg.to_bytes())
+            .expect("build high-S signature");
+        let high_bytes = high.to_bytes();
+        assert_eq!(high_bytes.len(), SIGNATURE_SIZE);
+
+        assert!(
+            pk.verify_sig(msg, &high_bytes).is_err(),
+            "verify_sig must reject the high-S malleated twin"
+        );
+    }
+
     /// Verifying against the wrong message must fail.
     #[test]
     fn verify_fails_on_wrong_message() {

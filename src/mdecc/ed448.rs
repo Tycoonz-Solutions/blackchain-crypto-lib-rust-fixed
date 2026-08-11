@@ -57,6 +57,54 @@ pub const SIGNATURE_SIZE: usize = 114;
 
 const PREHASH_CONTEXT: &str = "PREHASHED";
 
+/// The Ed448 field prime `p = 2^448 - 2^224 - 1`, little-endian.
+/// `bytes[0..28] = 0xff`, `bytes[28] = 0xfe`, `bytes[29..56] = 0xff`.
+const FIELD_PRIME_LE: [u8; 56] = {
+    let mut p = [0xffu8; 56];
+    p[28] = 0xfe;
+    p
+};
+
+/// Decodes a 57-byte Ed448 point encoding, enforcing RFC 8032 §5.2.3
+/// canonicality on top of goldilocks' on-curve check:
+///
+///   1. the final byte carries only the x-sign in bit 7 — bits 0..6 must be 0;
+///   2. the 56-byte little-endian y-coordinate must be strictly less than `p`.
+///
+/// goldilocks' `decompress` silently reduces `y` mod `p` and ignores the padding
+/// bits, so without these guards several distinct byte strings decode to the
+/// same point (a non-canonical-encoding / malleability gap). Returns the on-curve
+/// point, or an error naming the rejection reason.
+fn decode_canonical_point(raw: &[u8; PUBLIC_KEY_SIZE]) -> Result<ExtendedPoint, CryptoError> {
+    // (1) Unused padding bits around the sign bit must be clear.
+    if raw[56] & 0x7f != 0 {
+        return Err(CryptoError::CurveError(
+            "non-canonical Ed448 point: unused bits set in final byte".into(),
+        ));
+    }
+
+    // (2) Reject y >= p. Little-endian comparison from the most-significant byte.
+    let mut y_lt_p = false;
+    for i in (0..56).rev() {
+        if raw[i] < FIELD_PRIME_LE[i] {
+            y_lt_p = true;
+            break;
+        }
+        if raw[i] > FIELD_PRIME_LE[i] {
+            break;
+        }
+    }
+    if !y_lt_p {
+        return Err(CryptoError::CurveError(
+            "non-canonical Ed448 point: y-coordinate >= field prime".into(),
+        ));
+    }
+
+    CompressedEdwardsY(*raw)
+        .decompress()
+        .ok_or_else(|| CryptoError::CurveError("invalid Ed448 curve point".into()))
+}
+
 // ---------------------------------------------------------------------------
 // Signing mode
 // ---------------------------------------------------------------------------
@@ -130,10 +178,9 @@ impl PublicKey {
         let mut raw = [0u8; PUBLIC_KEY_SIZE];
         raw.copy_from_slice(data);
 
-        // Validate: does this byte string encode a real Ed448 curve point?
-        CompressedEdwardsY(raw)
-            .decompress()
-            .ok_or_else(|| CryptoError::CurveError("invalid Ed448 curve point".into()))?;
+        // Validate: does this byte string encode a real Ed448 curve point,
+        // canonically? (rejects y >= p and non-zero sign-byte padding)
+        decode_canonical_point(&raw)?;
 
         // We do NOT call ed448-rust here — that's the bug we're avoiding.
         // trusted_inner is None; verify_sig will use the goldilocks path.
@@ -201,10 +248,9 @@ impl PublicKey {
             digest::{ExtendableOutput, Update, XofReader},
         };
 
-        // Decompress the public key point A.
-        let a_point = CompressedEdwardsY(self.raw)
-            .decompress()
-            .ok_or_else(|| CryptoError::CurveError("public key decompression failed".into()))?;
+        // Decompress the public key point A (canonically validated).
+        let a_point = decode_canonical_point(&self.raw)
+            .map_err(|_| CryptoError::CurveError("public key decompression failed".into()))?;
 
         // Split signature: R (57 bytes) || S (57 bytes).
         let mut r_bytes = [0u8; 57];
@@ -212,8 +258,9 @@ impl PublicKey {
         r_bytes.copy_from_slice(&sig[..57]);
         s_bytes.copy_from_slice(&sig[57..]);
 
-        // Decompress the signature point R.
-        let r_point = CompressedEdwardsY(r_bytes).decompress().ok_or_else(|| {
+        // Decompress the signature point R, rejecting non-canonical encodings
+        // (y >= p or sign-byte padding) just like the public key.
+        let r_point = decode_canonical_point(&r_bytes).map_err(|_| {
             CryptoError::SignatureError("signature R decompression failed".into())
         })?;
 
@@ -796,6 +843,48 @@ mod tests {
         let bytes = pk.marshal_binary().unwrap();
         let pk2 = PublicKey::from_bytes(&bytes).unwrap();
         assert_eq!(pk, pk2);
+    }
+
+    #[test]
+    fn pubkey_rejects_noncanonical_y_ge_prime() {
+        // y = p (encodes the same low-order point as y = 0) must be rejected as
+        // a non-canonical encoding, even though it lands on the curve mod p.
+        let mut raw = [0u8; PUBLIC_KEY_SIZE];
+        raw[..56].copy_from_slice(&FIELD_PRIME_LE); // y = p
+        let err = PublicKey::from_bytes(&raw).unwrap_err();
+        assert!(matches!(err, CryptoError::CurveError(_)), "got {err:?}");
+
+        // y = p + 1 as well.
+        let mut yp1 = raw;
+        let mut carry = 1u16;
+        for b in yp1.iter_mut().take(56) {
+            let s = *b as u16 + carry;
+            *b = (s & 0xff) as u8;
+            carry = s >> 8;
+        }
+        assert!(PublicKey::from_bytes(&yp1).is_err());
+    }
+
+    #[test]
+    fn pubkey_rejects_noncanonical_signbyte_padding() {
+        // A valid canonical key with garbage in the low 7 bits of the sign byte
+        // decodes to the same point in goldilocks, so it must be rejected here.
+        let (pk, _) = generate_key().unwrap();
+        let mut raw = pk.as_bytes();
+        raw[56] |= 0x3f; // set unused padding bits
+        let err = PublicKey::from_bytes(&raw).unwrap_err();
+        assert!(matches!(err, CryptoError::CurveError(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn verify_rejects_noncanonical_r_signbyte_padding() {
+        // Mangling R's sign-byte padding must be rejected at decode time.
+        let (pk, sk) = generate_key().unwrap();
+        let sig = sk.sign_msg(b"canon-R", None).unwrap();
+        let mut bad = sig.clone();
+        bad[56] |= 0x3f; // R is sig[0..57]; byte 56 is R's final byte
+        let pk_deser = PublicKey::from_bytes(&pk.as_bytes()).unwrap();
+        assert!(pk_deser.verify_sig(b"canon-R", &bad, None).is_err());
     }
 
     #[test]

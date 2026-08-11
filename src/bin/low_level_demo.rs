@@ -72,15 +72,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - ML-DSA-87 Seed (Bytes 0..32 - 32 bytes):");
     println!("    0x{}", hex::encode(dil_seed));
 
-    // Next 16 bytes (32..48): mdECC Master Seed
-    let mdecc_seed = &child_seed[32..48];
-    println!("  - mdECC Master Seed (Bytes 32..48 - 16 bytes):");
+    // Remaining 32 bytes (32..64): mdECC Master Seed (256 bits)
+    let mdecc_seed = &child_seed[32..64];
+    println!("  - mdECC Master Seed (Bytes 32..64 - 32 bytes):");
     println!("    0x{}", hex::encode(mdecc_seed));
-
-    // Remaining 16 bytes (48..64): Chain Code (Reserved)
-    let chain_code = &child_seed[48..64];
-    println!("  - Chain Code (Bytes 48..64 - 16 bytes):");
-    println!("    0x{}", hex::encode(chain_code));
 
     // -------------------------------------------------------------------------
     // Step 5: Sub-Key Generation - ML-DSA-87 (Post-Quantum)

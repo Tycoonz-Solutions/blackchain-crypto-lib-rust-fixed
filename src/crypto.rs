@@ -7,11 +7,12 @@
 //
 // Key derivation from the 64-byte BIP-39 root seed:
 //   seed[0..32]  → ML-DSA-87 seed (256 bits)
-//   seed[32..48] → mdECC master seed → per-curve via SHAKE256 + HKDF-SHA3-512
-//   seed[48..64] → chain code / reserved
+//   seed[32..64] → mdECC master seed (256 bits) → per-curve via SHAKE256 + HKDF-SHA3-512
 //
 // Per-curve mdECC seeds use domain-separation curve IDs (1 = P-521, 2 = Ed448)
-// so the three key pairs are cryptographically independent.
+// so the three key pairs are cryptographically independent. The full 32-byte
+// mdECC master gives the classical sub-keys the same 256-bit seed entropy as
+// the ML-DSA-87 seed (no region of the root seed is left reserved/unused).
 
 use std::fmt;
 
@@ -266,8 +267,7 @@ impl BlackChainPrivateKey {
     /// Seed layout:
     /// ```text
     /// seed[0..32]  → ML-DSA-87 seed
-    /// seed[32..48] → mdECC master → per-curve via SHAKE256 + HKDF-SHA3-512
-    /// seed[48..64] → chain code (reserved)
+    /// seed[32..64] → mdECC master (256 bits) → per-curve via SHAKE256 + HKDF-SHA3-512
     /// ```
     ///
     /// # Errors
@@ -287,9 +287,9 @@ impl BlackChainPrivateKey {
         let (dil_pk, dil_sk) = dil_key_from_seed(&dil_seed);
 
         // ── mdECC master seed ─────────────────────────────────────────────────
-        // Bytes 32..48 are the 16-byte mdECC master; each curve gets an
+        // Bytes 32..64 are the 32-byte (256-bit) mdECC master; each curve gets an
         // independent seed via SHAKE256 domain-separation + HKDF-SHA3-512.
-        let mdecc_seed = &seed[32..48];
+        let mdecc_seed = &seed[32..64];
 
         // ── P-521 ─────────────────────────────────────────────────────────────
         let p521_seed = Zeroizing::new(derive_mdecc_curve_seed(mdecc_seed, CURVE_ID_P521, P521_SEED)?);
@@ -335,7 +335,7 @@ impl BlackChainPrivateKey {
         dil_seed.copy_from_slice(&seed[..DIL_SEED]);
         let (dil_pk, _) = dil_key_from_seed(&dil_seed);
 
-        let mdecc_seed = &seed[32..48];
+        let mdecc_seed = &seed[32..64];
         let p521_seed = Zeroizing::new(derive_mdecc_curve_seed(mdecc_seed, CURVE_ID_P521, P521_SEED)?);
         let (p521_pk, _) = P521Scheme.derive_key_typed(&p521_seed);
 
@@ -442,9 +442,9 @@ mod golden_tests {
 
         // Locked expected outputs (regenerate + update deliberately if the
         // derivation protocol ever intentionally changes).
-        const EXPECTED_ADDRESS: &str = "890a83d1a884667611d72e91c85f37c9a4f0baaa";
-        const EXPECTED_ED448_PK: &str = "e63fb7e69d78bc7cfddbd03cae79bc470a14605a2254f50181b09d63b0a24be38c5e1d3f330c7383b4e29aff9f06968976bb0038f321ad5780";
-        const EXPECTED_P521_PK_HEAD: &str = "040080cc3e42ad3101a3c71e04f4b4ae";
+        const EXPECTED_ADDRESS: &str = "627a606813a11b0ad7c0a1f87e077bd1f83ba976";
+        const EXPECTED_ED448_PK: &str = "2533b99ba7648d2b4d586a6f872da504b9cc46909b0223da93a9316a95b42c4454dba369669e874aacc06976f4c9ad5d9b8212a77c84c3e780";
+        const EXPECTED_P521_PK_HEAD: &str = "0400e2f88402fede86349efc0385b2d2";
         const EXPECTED_DIL_PK_HEAD: &str = "e3d83ad7a5d3463bc535f46168547e06";
 
         let addr = hex::encode(pub_key.derive_address().as_slice());

@@ -3,25 +3,29 @@ name = "blackchain-crypto-lib-rust"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85.0"
+# Consensus-critical crypto/hash/encoding deps are EXACT-pinned (`=x.y.z`): signature
+# validity is defined by this native code, so a patch-version drift in any of these
+# would change verify behaviour and split the network. Keep in lock-step with the
+# committed Cargo.lock. Util/keygen-only deps stay on caret ranges (lock-pinned).
 [dependencies]
-alloy-primitives = { version = "1.5.7", features = ["rlp", "serde"] }
-alloy-rlp = "0.3.13"
+alloy-primitives = { version = "=1.5.7", features = ["rlp", "serde"] }
+alloy-rlp = "=0.3.13"
 bip32 = "0.5"
-bip39 = "2.2.2"
-ed448-rust = "0.1.1"
-getrandom = "0.4.2"
-hkdf = "0.12"
-p521 = "0.13.3"
+bip39 = "=2.2.2"
+ed448-rust = "=0.1.1"
+getrandom = "=0.4.2"
+hkdf = "=0.12.4"
+p521 = "=0.13.3"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
-sha3 = "0.10"
-sha2 = { version = "0.10", default-features = false }
-thiserror = "2.0.18"
-zeroize = { version = "1.8.2", features = ["zeroize_derive", "derive"] }
+sha3 = "=0.10.8"
+sha2 = { version = "=0.10.9", default-features = false }
+thiserror = "=2.0.18"
+zeroize = { version = "=1.8.2", features = ["zeroize_derive", "derive"] }
 rand_core          = "0.6"
 subtle             = "2"
 hex                = "0.4"
-ed448-goldilocks = "0.9.0"
-ml-dsa = "0.1.1"
+ed448-goldilocks = "=0.9.0"
+ml-dsa = "=0.1.1"
 
 [dev-dependencies]
 proptest = "1.5.0"

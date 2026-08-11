@@ -601,6 +601,43 @@ mod tests {
         assert!(Scheme.derive_key_with_seed(&[0u8; SEED_SIZE + 1]).is_err());
     }
 
+    /// Authoritative FIPS 204 keygen KAT for ML-DSA-87.
+    ///
+    /// Unlike `mldsa87_keygen_regression_lock` (which pins values this crate
+    /// generated itself), this vector is external: the 32-byte seed ξ = 00 01
+    /// 02 … 1f and its expanded ML-DSA-87 verifying key come from the LAMPS
+    /// working group's `dilithium-certificates` interop examples
+    /// (https://github.com/lamps-wg/dilithium-certificates/tree/main/examples),
+    /// which track the FIPS 204 standard. Reproducing the exact 2592-byte
+    /// verifying key from the seed proves our `KeyGen`/`ExpandKey` path is
+    /// spec-conformant, not merely self-consistent.
+    #[test]
+    fn mldsa87_fips204_keygen_kat() {
+        // Seed ξ = 0x00,0x01,…,0x1f (the LAMPS example private seed).
+        let mut seed = [0u8; SEED_SIZE];
+        for (i, b) in seed.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+
+        let expected_pk = hex::decode(include_str!("mldsa87_lamps_pub.hex").trim())
+            .expect("valid hex vector");
+        assert_eq!(expected_pk.len(), PUBLIC_KEY_SIZE);
+
+        let (pk, sk) = new_key_from_seed(&seed);
+        assert_eq!(
+            pk.to_vec(),
+            expected_pk,
+            "ML-DSA-87 seed→verifying-key must match the LAMPS/FIPS 204 interop vector"
+        );
+
+        // The re-expanded verifying key must accept a signature this key makes,
+        // and a freshly deserialised copy of the authoritative bytes must too —
+        // closing the loop from the external vector back through our verify path.
+        let sig = sk.sign_internal(b"ml-dsa-87 fips204 kat");
+        let pk_from_vector = PublicKey::from_bytes(&expected_pk).expect("deserialise vector pk");
+        assert!(pk_from_vector.verify_internal(b"ml-dsa-87 fips204 kat", &sig).is_ok());
+    }
+
     /// Deterministic keygen regression lock for ML-DSA-87: pins seed → public
     /// key so a dependency bump that alters the algorithm is caught.
     #[test]
