@@ -936,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_scheme_sign_verify() {
+    fn typed_scheme_sign_verify() { 
         let s = Curve448Scheme;
         let (pk, sk) = s.generate_key_typed().unwrap();
         let sig = s.sign_typed(&sk, b"typed test", None);

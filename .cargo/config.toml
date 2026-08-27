@@ -1,0 +1,5 @@
+# The getrandom 0.4 backend selection for the browser. Only affects wasm32
+# builds; native targets are untouched. Pairs with the "wasm_js" feature wired
+# up in Cargo.toml under [target.'cfg(target_arch = "wasm32")'.dependencies].
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

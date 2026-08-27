@@ -11,13 +11,28 @@ use crate::hdwallet::derivation::{derive_child_seed, parse_hardened_path};
 use crate::transaction::types::BlackChainTxType;
 use alloy_primitives::Address;
 
+/// The default BlackChain account derivation path (BIP-44, coin type 60).
+pub const DEFAULT_ACCOUNT_PATH: &str = "m/44'/60'/0'/0'/0'";
+
+/// Creates a brand-new wallet: generates a fresh 24-word mnemonic and derives
+/// the account key from it. Returns the mnemonic (show once for backup) and key.
 pub fn create_wallet(passphrase: &str) -> Result<(String, BlackChainPrivateKey), CryptoError> {
     let mnemonic = generate_mnemonic()?;
-    let root_seed = seed_from_mnemonic(&mnemonic, passphrase)?;
-    let path = parse_hardened_path("m/44'/60'/0'/0'/0'")?;
+    let priv_key = restore_wallet(&mnemonic, passphrase)?;
+    Ok((mnemonic, priv_key))
+}
+
+/// Restores an existing wallet from a previously-backed-up mnemonic phrase.
+///
+/// Derives the same account key `create_wallet` would have produced for the
+/// same `(mnemonic, passphrase)` pair, using the [`DEFAULT_ACCOUNT_PATH`].
+/// This is the counterpart to `create_wallet` for import/unlock flows.
+pub fn restore_wallet(mnemonic: &str, passphrase: &str) -> Result<BlackChainPrivateKey, CryptoError> {
+    let root_seed = seed_from_mnemonic(mnemonic, passphrase)?;
+    let path = parse_hardened_path(DEFAULT_ACCOUNT_PATH)?;
     let child_seed = derive_child_seed(&root_seed, &path)?;
     let (priv_key, _) = BlackChainPrivateKey::generate(&child_seed)?;
-    Ok((mnemonic, priv_key))
+    Ok(priv_key)
 }
 
 pub fn sign_message(message: &[u8], key: &BlackChainPrivateKey) -> Result<Vec<u8>, CryptoError> {

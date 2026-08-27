@@ -7,6 +7,12 @@ rust-version = "1.85.0"
 # validity is defined by this native code, so a patch-version drift in any of these
 # would change verify behaviour and split the network. Keep in lock-step with the
 # committed Cargo.lock. Util/keygen-only deps stay on caret ranges (lock-pinned).
+[lib]
+# `cdylib` is required for the wasm-bindgen/wasm-pack build (the browser module);
+# `rlib` keeps native `cargo test`/consumers working. Native builds gain a
+# cdylib artifact too, which is harmless.
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 alloy-primitives = { version = "=1.5.7", features = ["rlp", "serde"] }
 alloy-rlp = "=0.3.13"
@@ -26,6 +32,20 @@ subtle             = "2"
 hex                = "0.4"
 ed448-goldilocks = "=0.9.0"
 ml-dsa = "=0.1.1"
+
+# ── WebAssembly (browser / wallet-extension) support ──────────────────────────
+# Applies only to wasm32 targets; native builds are unaffected. On
+# wasm32-unknown-unknown there is no OS RNG, so both getrandom generations in the
+# tree must be pointed at the JS host's crypto.getRandomValues:
+#   • getrandom 0.2 (via rand_core 0.6 — the EC/PQC stack) → "js" feature
+#   • getrandom 0.4 (our direct dep + ml-dsa)             → "wasm_js" feature
+# The 0.4 backend additionally requires the build flag configured in
+# .cargo/config.toml:  --cfg getrandom_backend="wasm_js"
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "=0.4.2", features = ["wasm_js"] }
+getrandom_js = { package = "getrandom", version = "0.2", features = ["js"] }
+wasm-bindgen = "0.2"
+serde_json = "1"
 
 [dev-dependencies]
 proptest = "1.5.0"

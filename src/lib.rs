@@ -11,6 +11,11 @@ pub mod mdecc;
 pub mod sign;
 pub mod transaction;
 
+/// WebAssembly / JavaScript bindings for browser wallet extensions.
+/// Compiled only for wasm32 targets; no effect on native builds.
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 pub use api::{create_wallet, sign_message, verify_message, sign_transaction, verify_transaction};
 pub use crypto::{BlackChainPrivateKey, BlackChainPublicKey, ALGO_ID, COMPOSITE_PK_SIZE, VERSION};
 pub use error::CryptoError;
