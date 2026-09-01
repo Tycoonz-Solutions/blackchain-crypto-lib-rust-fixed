@@ -13,9 +13,9 @@ A post-quantum hybrid cryptographic library implemented in Rust, designed for th
 ## Architecture & Features
 
 This library implements a composite, three-algorithm hybrid signature scheme:
-- **Post-Quantum Signature**: Dilithium5 (lattice-based, from crystals-dilithium).
-- **Classical Signature 1**: NIST P-521 ECDSA (from the p521 crate).
-- **Classical Signature 2**: Twisted Edwards Ed448 (from standard implementation).
+- **Post-Quantum Signature**: ML-DSA-87 (FIPS 204, lattice-based, from the `ml-dsa` crate). *(Formerly CRYSTALS-Dilithium; migrated to the FIPS 204 standard.)*
+- **Classical Signature 1**: NIST P-521 ECDSA (from the `p521` crate).
+- **Classical Signature 2**: Twisted Edwards Ed448 (`ed448-rust` for keygen/signing, `ed448-goldilocks` for validated deserialization/verification).
 
 The composite public/private keys contain material from all three schemes, making the scheme secure as long as at least one of the underlying algorithms remains unbroken.
 
@@ -32,14 +32,14 @@ The composite public/private keys contain material from all three schemes, makin
 - [src/lib.rs](src/lib.rs) — Entry point of the library. Exposes public modules and exports primary types, errors, key structures, and transaction APIs.
 - [src/error.rs](src/error.rs) — Defines the [CryptoError](src/error.rs#L4-L28) enum using the `thiserror` crate, handling RLP errors, BIP-39 parser errors, key size validation mismatches, and signature failures.
 - [src/crypto.rs](src/crypto.rs) — Implements composite key containers:
-  - [BlackChainPublicKey](src/crypto.rs#L55-L64): A concatenation of Dilithium5, P-521, and Ed448 public keys (Total size: 2,782 bytes).
+  - [BlackChainPublicKey](src/crypto.rs#L55-L64): A concatenation of ML-DSA-87, P-521, and Ed448 public keys (Total size: 2,782 bytes).
   - [BlackChainPrivateKey](src/crypto.rs#L135-L153): Private key structure matching the composite key layout. Retains the original 64-byte BIP-39 seed for BIP32 derivation. Both types support secure memory zeroization.
 - [src/sign.rs](src/sign.rs) — Defines the signature package design, including the [PublicKey](src/sign.rs#L93-L123), [PrivateKey](src/sign.rs#L125-L166), and [Scheme](src/sign.rs#L168-L290) traits, along with concrete counterparts ([TypedScheme](src/sign.rs#L301-L337)) for type-safe and dynamic signature dispatch.
 
 #### Modules
 
 ##### 1. Post-Quantum Cryptography (`src/dilithium/`)
-- [src/dilithium/mod.rs](src/dilithium/mod.rs) — Implements Dilithium5 signature bindings, wrapping `crystals-dilithium`. Provides pack/unpack, sign, verify, and seed key generation mechanisms.
+- [src/dilithium/mod.rs](src/dilithium/mod.rs) — Implements ML-DSA-87 (FIPS 204) signature bindings, wrapping the `ml-dsa` crate. Provides pack/unpack, sign, verify, and seed key generation mechanisms. *(The module path retains the historical `dilithium` name.)*
 
 ##### 2. Multi-Curve Elliptic Curve Cryptography (`src/mdecc/`)
 - [src/mdecc/mod.rs](src/mdecc/mod.rs) — Exports classic multi-curve schemes: Ed448 and NIST P-521.
@@ -64,7 +64,7 @@ The composite public/private keys contain material from all three schemes, makin
 
 ##### 5. Binaries & Test Tools (`src/bin/`)
 - [src/bin/demo.rs](src/bin/demo.rs) — Showcase binary displaying the complete step-by-step cryptographic execution flow with logging outputs.
-- [src/bin/test_dilithium.rs](src/bin/test_dilithium.rs) — Standard utility to run standalone tests/verification for the Dilithium5 scheme.
+- [src/bin/test_dilithium.rs](src/bin/test_dilithium.rs) — Standard utility to run standalone tests/verification for the ML-DSA-87 scheme.
 - [src/bin/test_ed448.rs](src/bin/test_ed448.rs) — Command-line utility to sign and verify payloads using the Ed448 scheme.
 - [src/bin/test_verify_roundtrip.rs](src/bin/test_verify_roundtrip.rs) — Integration utility testing key generation, signing, and verification workflows.
 
@@ -73,33 +73,52 @@ The composite public/private keys contain material from all three schemes, makin
 ## Cryptographic Specification & Protocols
 
 > [!TIP]
-> For a detailed visual guide and step-by-step breakdown of the cryptographic pipelines, refer to the [BlackChain Cryptographic Flows documentation](docs/README.md).
+> For the full architecture, threat model, and design rationale, see
+> [ARCHITECTURE.md](ARCHITECTURE.md). For the WebAssembly / browser wallet-extension
+> bindings, see [WASM.md](WASM.md).
+
+> [!IMPORTANT]
+> This section is normative — it is the wire/protocol spec any reimplementation
+> must match. The values below are kept in lock-step with the code; see
+> [ARCHITECTURE.md](ARCHITECTURE.md) for the full rationale.
 
 ### 1. Root Seed Partitioning
 When deriving composite keys from a 64-byte BIP-39 root seed, the bytes are structured as follows:
-- `seed[0..32]` (32 B)  → Dilithium5 Master Seed.
-- `seed[32..48]` (16 B) → mdECC Master Seed (produces independent curve seeds).
-- `seed[48..64]` (16 B) → Chain Code (reserved).
+- `seed[0..32]` (32 B)  → ML-DSA-87 Master Seed (ξ).
+- `seed[32..64]` (32 B) → mdECC Master Seed (256-bit; produces independent curve seeds).
+
+No region of the seed is reserved/unused: the mdECC master is a full 32 bytes so
+the classical sub-keys carry the same 256-bit seed entropy as the ML-DSA-87 seed.
+(BIP-32 child derivation independently consumes the whole 64-byte seed.)
 
 ### 2. mdECC Per-Curve Seed Derivation
 To guarantee cryptographic independence across classical curves, each curve's private seed is derived from the common mdECC master seed:
-1. `shaken = SHAKE256(mdECC_seed ‖ curve_id)[0..8]`
+1. `shaken = SHAKE256(mdECC_seed ‖ curve_id)[0..32]`
 2. `output_seed = HKDF-SHA3-512(IKM = shaken, salt = ∅, info = ∅)[0..seed_size]`
 *Note: `curve_id = 1` for P-521, and `curve_id = 2` for Ed448.*
 
 ### 3. Transaction Signing & Binding Protocol
 The transaction signature employs a cross-algorithm entanglement hash (`H_combined`) to prevent signature reuse or splicing across schemes:
-1. **Entanglement Nonce**:
-   `entg_nonce = SHAKE256("entangle" ‖ ALGO_ID ‖ VERSION ‖ address)[0..16]`
+1. **Entanglement Nonce** (chain-bound, so a signature cannot be replayed on another chain):
+   `entg_nonce = SHAKE256("entangle" ‖ ALGO_ID ‖ VERSION ‖ chain_id_be ‖ address)[0..16]`
+   where `chain_id_be` is the 8-byte big-endian chain id. (General, non-transaction
+   message signing uses a zeroed 16-byte nonce.)
 2. **H_combined**:
    `h_combined = SHAKE256(dil_pk ‖ p521_pk ‖ ed448_pk ‖ entg_nonce)[0..32]`
 3. **Signing Hash**:
-   Let `H` be the Keccak256 hash of the transaction RLP representation.
-   - **Dilithium5**: Signs `H` raw.
+   Let `H` be the Keccak256 hash of `TX_TYPE(0x80) ‖ RLP(unsigned tx)` (the unsigned
+   copy zeroes all signature fields, so `H` commits to `chain_id` and every economic field).
+   - **ML-DSA-87**: Signs `H` raw.
    - **P-521 ECDSA**: Signs `H ‖ h_combined ‖ curve_id(1)`.
    - **Ed448**: Signs `H ‖ h_combined ‖ curve_id(2)`.
 4. **Assembly**:
-   `pqc_signature = dil_sig ‖ p521_sig ‖ ed448_sig`.
+   `pqc_signature = dil_sig ‖ p521_sig ‖ ed448_sig` (fixed-width: 4627 + 132 + 114 = 4873 B).
+
+### 4. Signature-Envelope Canonicality
+The `v` / `r` / `s` fields are EIP-155-shaped placeholders (`v = chain_id*2 + 35`,
+`r = s = 0`), **not** secp256k1 values. They are not part of the authenticated hash,
+but recovery pins them to exactly these values and rejects anything else, so the
+signed wire encoding is unique (no transaction-ID malleability).
 
 ---
 
@@ -119,7 +138,13 @@ To run the complete step-by-step execution demo showing all keys, addresses, tra
 cargo run --bin demo
 ```
 
-To run the complete test suite (93 tests covering key derivation, transaction signing, and serialization):
+To run the complete test suite (140+ unit and integration tests covering key
+derivation, composite signing, transaction handling, serialization, and
+standards KATs for RFC 8032 / FIPS 204 / FIPS 186-4):
 ```bash
 cargo test
 ```
+
+### WebAssembly (browser wallet extension)
+The crate compiles to `wasm32-unknown-unknown` with a `wasm-bindgen` JS API; see
+[WASM.md](WASM.md) for the build commands and integration guide.
