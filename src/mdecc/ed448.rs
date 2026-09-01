@@ -66,15 +66,26 @@ const FIELD_PRIME_LE: [u8; 56] = {
 };
 
 /// Decodes a 57-byte Ed448 point encoding, enforcing RFC 8032 §5.2.3
-/// canonicality on top of goldilocks' on-curve check:
+/// canonicality on top of goldilocks' on-curve check, and rejecting small-order
+/// points:
 ///
 ///   1. the final byte carries only the x-sign in bit 7 — bits 0..6 must be 0;
-///   2. the 56-byte little-endian y-coordinate must be strictly less than `p`.
+///   2. the 56-byte little-endian y-coordinate must be strictly less than `p`;
+///   3. the point must not be small-order (identity or torsion).
 ///
 /// goldilocks' `decompress` silently reduces `y` mod `p` and ignores the padding
-/// bits, so without these guards several distinct byte strings decode to the
-/// same point (a non-canonical-encoding / malleability gap). Returns the on-curve
-/// point, or an error naming the rejection reason.
+/// bits, so without guards (1)/(2) several distinct byte strings decode to the
+/// same point (a non-canonical-encoding / malleability gap).
+///
+/// Guard (3) closes a universal-forgery gap: a small-order public key `A` (the
+/// identity being the sharpest case) makes the cofactored verification equation
+/// `[4]([S]B − [k]A − R) == O` collapse to the identity for `R = O, S = 0`
+/// *regardless of the message* — so a signature would verify for anything. A
+/// legitimate key `A = [s]B` lies in the prime-order subgroup, so `[4]A` is
+/// never the identity; every order-dividing-4 (torsion) point, including `O`,
+/// satisfies `[4]P == O` and is rejected. The same guard is applied to the
+/// signature point `R`, which is likewise never small-order for honest
+/// signatures.
 fn decode_canonical_point(raw: &[u8; PUBLIC_KEY_SIZE]) -> Result<ExtendedPoint, CryptoError> {
     // (1) Unused padding bits around the sign bit must be clear.
     if raw[56] & 0x7f != 0 {
@@ -100,9 +111,19 @@ fn decode_canonical_point(raw: &[u8; PUBLIC_KEY_SIZE]) -> Result<ExtendedPoint, 
         ));
     }
 
-    CompressedEdwardsY(*raw)
+    let point = CompressedEdwardsY(*raw)
         .decompress()
-        .ok_or_else(|| CryptoError::CurveError("invalid Ed448 curve point".into()))
+        .ok_or_else(|| CryptoError::CurveError("invalid Ed448 curve point".into()))?;
+
+    // (3) Reject small-order (torsion) points. Ed448's cofactor is 4, so any
+    // point whose order divides 4 — the identity included — is killed by [4]·P.
+    if point.double().double() == ExtendedPoint::identity() {
+        return Err(CryptoError::CurveError(
+            "small-order Ed448 point rejected (identity or torsion)".into(),
+        ));
+    }
+
+    Ok(point)
 }
 
 // ---------------------------------------------------------------------------
@@ -731,6 +752,41 @@ mod tests {
         pk_deser
             .verify_sig(msg, &sig_expected, None)
             .expect("goldilocks verification must accept the RFC 8032 signature");
+    }
+
+    /// Small-order public keys (the identity being the sharpest case) must be
+    /// rejected outright: otherwise `(A=O, R=O, S=0)` is a universal forgery
+    /// that verifies for ANY message. This pins the fix at the deserialisation
+    /// gate (`from_bytes`) and, defensively, at the verifier.
+    #[test]
+    fn rejects_small_order_identity_public_key() {
+        // Identity point encoding: y = 1 (little-endian), x-sign bit clear.
+        let mut identity = [0u8; PUBLIC_KEY_SIZE];
+        identity[0] = 0x01;
+
+        // The public key must not even deserialise.
+        assert!(
+            PublicKey::from_bytes(&identity).is_err(),
+            "identity / small-order Ed448 public key must be rejected by from_bytes"
+        );
+
+        // And the full PoC signature must not verify via any constructed key.
+        // (Build a struct directly to prove the verifier itself also rejects it,
+        // independent of the from_bytes gate.)
+        let pk = PublicKey {
+            raw: identity,
+            trusted_inner: None,
+        };
+        let mut forged_sig = [0u8; SIGNATURE_SIZE];
+        forged_sig[0] = 0x01; // R = identity encoding; S = all-zero scalar.
+        assert!(
+            pk.verify_sig(b"any message at all", &forged_sig, None).is_err(),
+            "small-order universal forgery must be rejected by the verifier"
+        );
+        assert!(
+            pk.verify_sig(b"a different message", &forged_sig, None).is_err(),
+            "small-order forgery must fail for every message"
+        );
     }
 
     // THE critical regression test.

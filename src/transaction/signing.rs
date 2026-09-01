@@ -187,7 +187,9 @@ impl BlackChainTxType {
     /// hash, then delegates all cryptographic reconstruction and verification there.
     ///
     /// # Errors
-    /// Returns `Err` if any signature is missing, invalid, or fails verification.
+    /// Returns `Err` if any signature is missing, invalid, or fails verification,
+    /// or if the `v`/`r`/`s` envelope fields are not their mandated placeholder
+    /// values (see below).
     pub fn recover_sender(&self) -> Result<Address, CryptoError> {
         let pqc_sig = self.pqc_signature.as_ref().ok_or_else(|| {
             CryptoError::SignatureError("transaction is not signed (pqc_signature missing)".into())
@@ -195,6 +197,27 @@ impl BlackChainTxType {
         let pub_key_bytes = self.pub_key.as_ref().ok_or_else(|| {
             CryptoError::SignatureError("transaction is not signed (pub_key missing)".into())
         })?;
+
+        // The v/r/s fields are fixed EIP-155-shaped placeholders (v = chain_id*2+35,
+        // r = s = 0), NOT part of the authenticated PQC signature — `signature_hash`
+        // deliberately excludes them. But they ARE serialized into the wire
+        // transaction by the RLP encoder, so if recovery ignored them an attacker
+        // could rewrite them to arbitrary values and produce a *different* wire
+        // encoding that still recovers the same sender. Any layer that derives a
+        // transaction ID (or mempool/relay key) from the full envelope would then
+        // see two distinct IDs for one authenticated transaction — signature/txid
+        // malleability. Pinning them here makes exactly one encoding canonical.
+        let expected_v = U256::from(self.chain_id) * U256::from(2) + U256::from(35);
+        if self.v != Some(expected_v)
+            || self.r != Some(U256::ZERO)
+            || self.s != Some(U256::ZERO)
+        {
+            return Err(CryptoError::SignatureError(
+                "non-canonical transaction envelope: v/r/s must equal the mandated \
+                 placeholders (v = chain_id*2+35, r = 0, s = 0)"
+                    .into(),
+            ));
+        }
 
         let hash = self.signature_hash();
         verify_signature(&hash, self.chain_id, pub_key_bytes.as_ref(), pqc_sig.as_ref())
@@ -307,5 +330,53 @@ mod tests {
         // Recover the sender
         let recovered = tx.recover_sender().expect("Failed to recover sender");
         assert_eq!(recovered, address);
+    }
+
+    /// The `v`/`r`/`s` envelope fields are unauthenticated placeholders that are
+    /// nonetheless serialized on the wire. Recovery must pin them to their
+    /// mandated values so a mutated envelope cannot recover the same sender
+    /// (transaction-ID / mempool malleability).
+    #[test]
+    fn mutated_vrs_envelope_is_rejected() {
+        let mut seed = [0u8; 64];
+        for (i, byte) in seed.iter_mut().enumerate() {
+            *byte = (i * 7 + 13) as u8;
+        }
+        let (priv_key, _pub_key) = BlackChainPrivateKey::generate(&seed).unwrap();
+
+        let base = BlackChainTxType {
+            chain_id: 1,
+            nonce: 3,
+            max_priority_fee_per_gas: U256::from(1u64),
+            max_fee_per_gas: U256::from(2u64),
+            gas_limit: 21_000,
+            to: Some(Address::repeat_byte(0xaa)),
+            value: U256::from(5u64),
+            data: Bytes::from(vec![9, 9, 9]),
+            v: None,
+            r: None,
+            s: None,
+            pqc_signature: None,
+            pub_key: None,
+        };
+
+        let mut signed = base.clone();
+        signed.sign_transaction(&priv_key).unwrap();
+        // Canonical envelope still recovers.
+        assert!(signed.recover_sender().is_ok());
+
+        // Each of v, r, s, when mutated away from its mandated placeholder, must
+        // be rejected — even though the PQC signature itself is untouched.
+        let mut bad_v = signed.clone();
+        bad_v.v = Some(U256::from(9999u64));
+        assert!(bad_v.recover_sender().is_err(), "mutated v must be rejected");
+
+        let mut bad_r = signed.clone();
+        bad_r.r = Some(U256::from(1u64));
+        assert!(bad_r.recover_sender().is_err(), "mutated r must be rejected");
+
+        let mut bad_s = signed.clone();
+        bad_s.s = Some(U256::from(1u64));
+        assert!(bad_s.recover_sender().is_err(), "mutated s must be rejected");
     }
 }
