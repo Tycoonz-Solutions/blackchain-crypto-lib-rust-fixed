@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Keep CI action versions patched (supply-chain hygiene for the workflow).
+  #
+  # NOTE: the `cargo` ecosystem is intentionally NOT enabled here. This crate's
+  # consensus-critical crypto/hash/encoding dependencies are exact-pinned
+  # (`=x.y.z`) because signature validity is defined by that native code — a
+  # silent patch bump could change verification behaviour and split the network.
+  # Dependency updates are therefore reviewed and applied deliberately, not by bot.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "github-actions"

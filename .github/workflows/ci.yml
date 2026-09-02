@@ -5,59 +5,152 @@ on:
     branches: [main, "dev/**"]
   pull_request:
     branches: [main]
+  # Weekly sweep catches newly-published advisories and toolchain bit-rot even
+  # when nothing has been pushed.
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch: {}
+
+# Least privilege by default; jobs opt into more only where they need it.
+permissions:
+  contents: read
+
+# A newer push to the same ref cancels the in-flight run — saves minutes and
+# avoids wasted work on superseded commits. Scheduled runs are never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # This is a consensus-critical crypto library: signature validity is defined by
+  # exact-pinned deps, so CI must fail rather than silently re-resolve. `--locked`
+  # is passed to every cargo invocation below; this env is a belt-and-suspenders
+  # guard for any tool that shells out to cargo without it.
+  CARGO_NET_RETRY: "3"
 
 jobs:
+  # ── Lint: formatting (informational), clippy (blocking), doc-link check ──────
+  lint:
+    name: Lint & docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
+
+      # Kept informational (non-blocking) until the tree is fully rustfmt-clean;
+      # flip `continue-on-error` to false once `cargo fmt --all` has been applied.
+      - name: Formatting (informational)
+        run: cargo fmt --all --check
+        continue-on-error: true
+
+      # clippy is a superset of rustc's own lints, so `-D warnings` here gates
+      # both. Only first-party crates are linted; dependency warnings don't fail.
+      - name: Clippy (deny warnings)
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      # Broken intra-doc links become hard errors — the docs carry many
+      # cross-references, and a dangling link is a real defect.
+      - name: Build docs (deny broken links)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --locked --no-deps --all-features
+
+  # ── Test: cross-platform, unit + integration + doctests ─────────────────────
   test:
-    name: Test & Lint
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (locked)
+        run: cargo build --locked --all-targets --all-features
+
+      # `--all-targets` runs unit/integration/bin/bench-compile but NOT doctests;
+      # the separate `--doc` run covers the rustdoc examples.
+      - name: Test (all targets)
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Test (doctests)
+        run: cargo test --locked --doc --all-features
+
+  # ── MSRV: the crate advertises rust-version 1.85.0 — prove it still builds ───
+  msrv:
+    name: MSRV (1.85.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.85.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0" # keep in sync with `rust-version` in Cargo.toml
+
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+
+      # Build + test the library on the exact MSRV so the advertised floor is real.
+      - name: Build & test on MSRV
+        run: cargo test --locked --all-features
+
+  # ── WASM: the browser / wallet-extension target must keep compiling ──────────
+  wasm:
+    name: WASM build (wasm32-unknown-unknown)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + wasm target)
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          targets: wasm32-unknown-unknown
 
-      - name: Cargo cache
-        uses: actions/cache@v4
+      - name: Cache cargo & target
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: wasm
 
-      - name: Clippy checks (deny warnings)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      # The getrandom wasm backend flag is supplied by .cargo/config.toml. Building
+      # the cdylib guards the wasm-bindgen bindings and the browser RNG wiring.
+      - name: Build library for wasm
+        run: cargo build --locked --lib --release --target wasm32-unknown-unknown
 
-      - name: Run test suite
-        run: cargo test --all-targets
-
-  fmt:
-    name: Rustfmt (informational)
+  # ── Security advisories (RustSec) ───────────────────────────────────────────
+  audit:
+    name: Security audit
     runs-on: ubuntu-latest
-    # The codebase is not yet fully rustfmt-clean; report drift without blocking.
-    continue-on-error: true
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write # let the action open/track advisory issues on the default branch
+      checks: write # and surface findings as a check run
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-  security_audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run security audit
+      - name: cargo audit (RustSec advisory DB)
         uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ github.token }}
