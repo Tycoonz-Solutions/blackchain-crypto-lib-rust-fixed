@@ -1,14 +1,16 @@
 // wasm.rs — WebAssembly / JavaScript bindings for browser wallet extensions.
 //
-// This module is compiled ONLY for `wasm32` targets (see the gated `pub mod
-// wasm` in lib.rs); it has zero effect on native builds. It exposes a small,
-// JS-callable surface over the high-level `api` so a wallet extension's
-// background/service-worker can create wallets, show an address, and sign
-// messages and transactions without ever handling raw key material in JS.
+// This module is compiled ONLY when the off-by-default `browser` feature is
+// enabled (see the gated `pub mod wasm` in lib.rs); it has zero effect on native
+// builds or on the Substrate runtime's own wasm32 build, neither of which pulls
+// in wasm-bindgen. It exposes a small, JS-callable surface over the high-level
+// `api` so a wallet extension's background/service-worker can create wallets,
+// show an address, and sign messages and transactions without ever handling raw
+// key material in JS.
 //
 // Build (produces the .wasm + JS glue an extension imports):
 //   RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
-//     wasm-pack build --target web --release
+//     wasm-pack build --target web --release --features browser
 // (The RUSTFLAGS line is already provided by .cargo/config.toml.)
 //
 // ## Security model for extension authors

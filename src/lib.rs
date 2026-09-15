@@ -12,8 +12,10 @@ pub mod sign;
 pub mod transaction;
 
 /// WebAssembly / JavaScript bindings for browser wallet extensions.
-/// Compiled only for wasm32 targets; no effect on native builds.
-#[cfg(target_arch = "wasm32")]
+/// Gated behind the off-by-default `browser` feature so that neither native
+/// builds nor the Substrate runtime's own wasm32 build pull in wasm-bindgen;
+/// only `wasm-pack build --features browser` compiles this module.
+#[cfg(feature = "browser")]
 pub mod wasm;
 
 pub use api::{create_wallet, sign_message, verify_message, sign_transaction, verify_transaction};
