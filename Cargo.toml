@@ -33,19 +33,16 @@ hex                = "0.4"
 ed448-goldilocks = "=0.9.0"
 ml-dsa = "=0.1.1"
 
-# ── WebAssembly (browser / wallet-extension) support ──────────────────────────
-# Applies only to wasm32 targets; native builds are unaffected. On
-# wasm32-unknown-unknown there is no OS RNG, so both getrandom generations in the
-# tree must be pointed at the JS host's crypto.getRandomValues:
-#   • getrandom 0.2 (via rand_core 0.6 — the EC/PQC stack) → "js" feature
-#   • getrandom 0.4 (our direct dep + ml-dsa)             → "wasm_js" feature
-# The 0.4 backend additionally requires the build flag configured in
-# .cargo/config.toml:  --cfg getrandom_backend="wasm_js"
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "=0.4.2", features = ["wasm_js"] }
-getrandom_js = { package = "getrandom", version = "0.2", features = ["js"] }
-wasm-bindgen = "0.2"
-serde_json = "1"
+# Browser/wallet (wasm-bindgen) bindings — pulled in ONLY by the `browser` feature.
+wasm-bindgen = { version = "0.2", optional = true }
+serde_json   = { version = "1",   optional = true }
+getrandom_js = { package = "getrandom", version = "0.2", features = ["js"], optional = true }
+
+[features]
+# OFF by default: native builds AND the Substrate runtime's wasm32 build get NONE of
+# the browser bindings (so they don't drag in wasm-bindgen). Enable only for wasm-pack:
+#   wasm-pack build --target web --release --features browser
+browser = ["dep:wasm-bindgen", "dep:serde_json", "dep:getrandom_js", "getrandom/wasm_js"]
 
 [dev-dependencies]
 proptest = "1.5.0"
